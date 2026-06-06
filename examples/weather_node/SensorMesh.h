@@ -34,11 +34,11 @@
 #define PERM_RECV_ALERTS_HI    (1 << 7)   // high priority alerts
 
 #ifndef FIRMWARE_BUILD_DATE
-  #define FIRMWARE_BUILD_DATE   "18 May 2026"
+  #define FIRMWARE_BUILD_DATE   "6 Jun 2026"
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.15.0"
+  #define FIRMWARE_VERSION   "v1.16.0"
 #endif
 
 #define FIRMWARE_ROLE "sensor"
@@ -138,10 +138,10 @@ private:
   CommonCLI _cli;
   uint8_t reply_data[MAX_PACKET_PAYLOAD];
   unsigned long dirty_contacts_expiry;
+  CayenneLPP telemetry;
   TransportKeyStore key_store;
   RegionMap region_map;
   TransportKey default_scope;
-  CayenneLPP telemetry;
   uint32_t last_read_time;
   int matching_peer_indexes[MAX_SEARCH_RESULTS];
   int num_alert_tasks;
