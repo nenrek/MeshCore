@@ -101,7 +101,12 @@ static const uint8_t AREF = PIN_AREF;
 /*
  * Serial interfaces
  */
-// TXD1 RXD1 on Base Board
+// TXD1 RXD1 on Base Board — same nets as the RAK4631. Verified empirically
+// (2026-06-11, 'uart probe' against a live RAK2305 on a RAK19011): TX=P0.16
+// drew an AT/OK reply with RX=P0.15. A web copy of the RAK3401 datasheet
+// claiming UART1=P0.19/P0.20 is wrong. If Serial1 ever goes silent here,
+// check first that nothing else (GPS!) owns it — see -UENV_INCLUDE_GPS in
+// the mqtt_repeater env.
 #define PIN_SERIAL1_RX (15)
 #define PIN_SERIAL1_TX (16)
 

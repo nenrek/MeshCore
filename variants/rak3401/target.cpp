@@ -24,6 +24,9 @@ WRAPPER_CLASS radio_driver(radio, board);
 VolatileRTCClock fallback_clock;
 AutoDiscoverRTCClock rtc_clock(fallback_clock);
 
+// NOTE: the mqtt_repeater env builds with -U ENV_INCLUDE_GPS — Serial1 belongs
+// to its RAK2305 ESP-AT bridge, and the GPS NMEA reader would silently consume
+// the bridge's RX bytes.
 #if ENV_INCLUDE_GPS
   #include <helpers/sensors/MicroNMEALocationProvider.h>
   MicroNMEALocationProvider nmea = MicroNMEALocationProvider(Serial1, &rtc_clock);
