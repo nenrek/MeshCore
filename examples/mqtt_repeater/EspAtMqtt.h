@@ -53,7 +53,9 @@
   #define MQTT_BACKOFF_MAX_MS     60000UL
 #endif
 #ifndef MQTT_MAX_PAYLOAD
-  #define MQTT_MAX_PAYLOAD        256
+  // Must hold a full packet's `raw` hex (up to 2*MAX_TRANS_UNIT = 510 chars)
+  // plus the surrounding meshcoretomqtt JSON envelope (~280 chars).
+  #define MQTT_MAX_PAYLOAD        1024
 #endif
 #ifndef MQTT_QUEUE_LEN
   #define MQTT_QUEUE_LEN          8
@@ -355,7 +357,7 @@ class EspAtMqtt {
 
   void queueHeartbeat() {
     char ts[40]; isoTime(ts, sizeof(ts));
-    char p[MQTT_MAX_PAYLOAD];
+    static char p[MQTT_MAX_PAYLOAD];  // 1KB — keep off the stack
     snprintf(p, sizeof(p),
       "{\"origin\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\","
       "\"type\":\"HEARTBEAT\",\"uptime_s\":%lu,\"pkts\":%lu,"
@@ -460,6 +462,16 @@ public:
     _pkts_seen++;
     if (_cstate != CS_ONLINE && _qcount >= MQTT_QUEUE_LEN) return;  // avoid churn while offline
 
+    // The full over-the-air frame, hex-encoded, is the `raw` field the map
+    // decoders (meshcore-decoder / meshcore-go) need to recover node identity,
+    // position, adverts and routes. Without it the packet cannot be decoded.
+    // Buffers are static (single-threaded packet hook) to keep this off the stack.
+    static uint8_t raw[MAX_TRANS_UNIT];
+    static char    raw_hex[2 * MAX_TRANS_UNIT + 1];
+    static char    p[MQTT_MAX_PAYLOAD];
+    uint8_t raw_len = pkt->writeTo(raw);
+    toHex(raw_hex, raw, raw_len);
+
     uint8_t hash[MAX_HASH_SIZE];
     pkt->calculatePacketHash(hash);
     char hash_hex[2 * MAX_HASH_SIZE + 1];
@@ -469,15 +481,15 @@ public:
     int rssi = (int)radio_driver.getLastRSSI();
     float snr = pkt->getSNR();
 
-    char p[MQTT_MAX_PAYLOAD];
+    // meshcoretomqtt envelope — matches meshmapper / letsmesh / beacon ingest.
     snprintf(p, sizeof(p),
       "{\"origin\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\","
-      "\"type\":\"PACKET\",\"direction\":\"rx\",\"len\":%u,\"packet_type\":%u,"
-      "\"hash\":\"%s\",\"route\":\"%s\",\"path_len\":%u,\"rssi\":%d,\"snr\":%.1f}",
-      _node_name ? _node_name : "node", _pubkey_hex, ts,
-      (unsigned)pkt->payload_len, (unsigned)pkt->getPayloadType(), hash_hex,
-      pkt->isRouteFlood() ? "flood" : "direct",
-      (unsigned)pkt->getPathHashCount(), rssi, (double)snr);
+      "\"type\":\"PACKET\",\"direction\":\"rx\",\"raw\":\"%s\","
+      "\"len\":%u,\"payload_len\":%u,\"packet_type\":%u,\"route\":\"%s\","
+      "\"hash\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
+      _node_name ? _node_name : "node", _pubkey_hex, ts, raw_hex,
+      (unsigned)raw_len, (unsigned)pkt->payload_len, (unsigned)pkt->getPayloadType(),
+      pkt->isRouteFlood() ? "F" : "D", hash_hex, (double)snr, rssi);
     enqueue(LEAF_PACKETS, p, false);
   }
 
@@ -567,7 +579,7 @@ public:
     if (strcmp(cmd, "mqtt verbose off")== 0){ _verbose = false; strcpy(reply,"AT trace OFF"); return true; }
     if (strcmp(cmd, "mqtt test") == 0) {
       char ts[40]; isoTime(ts, sizeof(ts));
-      char p[MQTT_MAX_PAYLOAD];
+      static char p[MQTT_MAX_PAYLOAD];
       snprintf(p, sizeof(p), "{\"origin\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\",\"type\":\"TEST\"}",
                _node_name ? _node_name : "node", _pubkey_hex, ts);
       bool ok = enqueue(LEAF_DEBUG, p, false);
