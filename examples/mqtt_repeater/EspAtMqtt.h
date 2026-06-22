@@ -268,6 +268,21 @@ class EspAtMqtt {
   }
 
   void serviceBringup(unsigned long now) {
+    // ST_PUBSTATUS is a virtual finalize step that sends no AT command, so it
+    // must run BEFORE the issueStep guard below: issueStep() has no case for it
+    // and its default-return never sets _step_sent, which would otherwise loop
+    // here forever — connected to the broker but never transitioning to online.
+    // (Latent until the first successful MQTTCONN.)
+    if (_step == ST_PUBSTATUS) {
+      _backoff_ms = MQTT_BACKOFF_MIN_MS;
+      enqueue(LEAF_STATUS, "online", true);   // retained "online"
+      _next_heartbeat = now + 2000;
+      _pstate = PUB_IDLE;
+      _cstate = CS_ONLINE;
+      Serial.printf("[MQTT] online: %s:%u scheme=%u as %s\n",
+                    _host, (unsigned)_port, (unsigned)_scheme, _client_id);
+      return;
+    }
     if (!_step_sent) { issueStep(now); return; }
     bool timeout = (long)(now - _step_deadline) >= 0;
 
@@ -293,19 +308,12 @@ class EspAtMqtt {
         else if (sawError() || timeout) failBringup("MQTTCONNCFG");
         break;
       case ST_CONN:
-        if (sawOK() || seen("+MQTTCONNECTED")) advanceStep();
+        // ESP-AT can emit "+MQTTCONNECTED" then "ERROR" (e.g. CONNECT URC plus a
+        // benign command-level error); treat the URC as authoritative success.
+        if (seen("+MQTTCONNECTED") || sawOK()) advanceStep();
         else if (sawError() || timeout) failBringup("MQTTCONN (broker?)");
         break;
-      case ST_PUBSTATUS:
-        // queue retained "online", then enter the steady-state publish loop
-        _backoff_ms = MQTT_BACKOFF_MIN_MS;
-        enqueue(LEAF_STATUS, "online", true);
-        _next_heartbeat = now + 2000;
-        _pstate = PUB_IDLE;
-        _cstate = CS_ONLINE;
-        Serial.printf("[MQTT] online: %s:%u scheme=%u as %s\n",
-                      _host, (unsigned)_port, (unsigned)_scheme, _client_id);
-        break;
+      // ST_PUBSTATUS handled at top of serviceBringup (no AT command).
     }
   }
 
