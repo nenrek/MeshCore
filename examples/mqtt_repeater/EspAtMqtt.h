@@ -49,6 +49,12 @@
 #ifndef MQTT_BACKOFF_MIN_MS
   #define MQTT_BACKOFF_MIN_MS     5000UL
 #endif
+#ifndef MQTT_ONLINE_SETTLE_MS
+  // Hold the first publish briefly after +MQTTCONNECTED so AT+MQTTPUBRAW doesn't
+  // race the tail of the connect response (which yields "busy p..." + a failed
+  // publish, and can wedge/reset the ESP-AT stack).
+  #define MQTT_ONLINE_SETTLE_MS   1000UL
+#endif
 #ifndef MQTT_BACKOFF_MAX_MS
   #define MQTT_BACKOFF_MAX_MS     60000UL
 #endif
@@ -104,6 +110,7 @@ class EspAtMqtt {
   PState   _pstate;
   unsigned long _pub_deadline;
   unsigned long _next_heartbeat;
+  unsigned long _online_settle;   // hold first publish until this time after connect
 
   // ---- AT rx accumulator ----
   char     _rx[MQTT_RX_BUF];
@@ -275,7 +282,9 @@ class EspAtMqtt {
     // (Latent until the first successful MQTTCONN.)
     if (_step == ST_PUBSTATUS) {
       _backoff_ms = MQTT_BACKOFF_MIN_MS;
+      clearRx();                              // drop the connect-response residue
       enqueue(LEAF_STATUS, "online", true);   // retained "online"
+      _online_settle = now + MQTT_ONLINE_SETTLE_MS;
       _next_heartbeat = now + 2000;
       _pstate = PUB_IDLE;
       _cstate = CS_ONLINE;
@@ -320,6 +329,9 @@ class EspAtMqtt {
   /* ===================== steady-state publish ===================== */
   void serviceOnline(unsigned long now) {
     if (seen("+MQTTDISCONNECTED")) { failBringup("disconnected"); return; }
+    // Post-connect settle: don't start the first publish (or a heartbeat) until
+    // the ESP has finished the connect handshake — avoids the busy/race.
+    if (_pstate == PUB_IDLE && (long)(now - _online_settle) < 0) return;
 
     switch (_pstate) {
       case PUB_IDLE: {
@@ -382,7 +394,7 @@ public:
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
-      _pstate(PUB_IDLE), _pub_deadline(0), _next_heartbeat(0),
+      _pstate(PUB_IDLE), _pub_deadline(0), _next_heartbeat(0), _online_settle(0),
       _rxlen(0), _verbose(false), _wifi_got_ip(false),
       _hw_seen(false), _no_hw(false), _bringup_fails(0),
       _qhead(0), _qtail(0), _qcount(0),
