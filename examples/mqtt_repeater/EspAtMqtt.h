@@ -236,9 +236,11 @@ class EspAtMqtt {
         break;
       case ST_CONNCFG:
         topicFor(LEAF_STATUS, topic, sizeof(topic));
-        // LWT: broker publishes "offline" retained if we drop unexpectedly
+        // LWT publishes to /status on unexpected drop, so it must be valid JSON
+        // too (Beacon json.Unmarshals /status). "{}" is the minimal valid object
+        // and needs no AT-string quote-escaping.
         snprintf(cmd, sizeof(cmd),
-                 "AT+MQTTCONNCFG=0,%u,0,\"%s\",\"offline\",0,1",
+                 "AT+MQTTCONNCFG=0,%u,0,\"%s\",\"{}\",0,1",
                  (unsigned)MQTT_KEEPALIVE_S, topic);
         break;
       case ST_CONN:
@@ -283,7 +285,16 @@ class EspAtMqtt {
     if (_step == ST_PUBSTATUS) {
       _backoff_ms = MQTT_BACKOFF_MIN_MS;
       clearRx();                              // drop the connect-response residue
-      enqueue(LEAF_STATUS, "online", true);   // retained "online"
+      // Beacon json.Unmarshals /status — it must be a JSON object, not the bare
+      // word "online" (which threw "invalid character 'o'"). All fields optional.
+      static char sj[256];
+      snprintf(sj, sizeof(sj),
+        "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
+        "\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,\"recv_errors\":%lu}}",
+        _node_name ? _node_name : "node",
+        (unsigned long)(millis() / 1000), (unsigned)_qcount,
+        (unsigned long)_pub_fail);
+      enqueue(LEAF_STATUS, sj, true);         // retained JSON status
       _online_settle = now + MQTT_ONLINE_SETTLE_MS;
       _next_heartbeat = now + 2000;
       _pstate = PUB_IDLE;
@@ -492,24 +503,19 @@ public:
     uint8_t raw_len = pkt->writeTo(raw);
     toHex(raw_hex, raw, raw_len);
 
-    uint8_t hash[MAX_HASH_SIZE];
-    pkt->calculatePacketHash(hash);
-    char hash_hex[2 * MAX_HASH_SIZE + 1];
-    toHex(hash_hex, hash, MAX_HASH_SIZE);
-
     char ts[40]; isoTime(ts, sizeof(ts));
     int rssi = (int)radio_driver.getLastRSSI();
     float snr = pkt->getSNR();
 
-    // meshcoretomqtt envelope — matches meshmapper / letsmesh / beacon ingest.
+    // Minimal meshcoretomqtt packet envelope (Beacon / meshmapper). `raw` is the
+    // ONLY required field — the broker-side decoder rebuilds hash/type/path/etc.
+    // from it. Earlier we also sent numeric len/payload_len/packet_type; Beacon's
+    // struct types those differently (e.g. len is a string), so json.Unmarshal
+    // failed with "malformed packet envelope". Keys must be exactly these, and
+    // SNR/RSSI MUST be upper-case (lower-case is silently ignored -> 0).
     snprintf(p, sizeof(p),
-      "{\"origin\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\","
-      "\"type\":\"PACKET\",\"direction\":\"rx\",\"raw\":\"%s\","
-      "\"len\":%u,\"payload_len\":%u,\"packet_type\":%u,\"route\":\"%s\","
-      "\"hash\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
-      _node_name ? _node_name : "node", _pubkey_hex, ts, raw_hex,
-      (unsigned)raw_len, (unsigned)pkt->payload_len, (unsigned)pkt->getPayloadType(),
-      pkt->isRouteFlood() ? "F" : "D", hash_hex, (double)snr, rssi);
+      "{\"raw\":\"%s\",\"timestamp\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
+      raw_hex, ts, (double)snr, rssi);
     enqueue(LEAF_PACKETS, p, false);
   }
 
