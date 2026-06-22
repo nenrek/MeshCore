@@ -142,13 +142,22 @@ class EspAtMqtt {
              _pubkey_hex[3], _pubkey_hex[4], _pubkey_hex[5]);
   }
 
+  // The RAK2305 ESP-AT build (ESP-IDF v4.0) caps MQTT topic strings at 64 chars
+  // (measured: 64 OK, 66 ERROR). The full 64-hex pubkey overflows that, so the
+  // key segment is truncated to fit. Budget is computed against the LONGEST leaf
+  // ("packets"=7) so the key is identical across status/packets/debug — the map
+  // correlates an observer's topics by that key.
+  #define MQTT_TOPIC_MAX 64
   void topicFor(uint8_t leaf, char* buf, int n) {
     const char* l = (leaf == LEAF_STATUS) ? "status" : (leaf == LEAF_PACKETS) ? "packets" : "debug";
-    snprintf(buf, n, "%s/%s/%s/%s",
-             _prefix[0] ? _prefix : "meshcore",
-             _iata[0]   ? _iata   : "XXX",
-             _pubkey_hex[0] ? _pubkey_hex : "00",
-             l);
+    const char* prefix = _prefix[0] ? _prefix : "meshcore";
+    const char* iata   = _iata[0]   ? _iata   : "XXX";
+    const char* key    = _pubkey_hex[0] ? _pubkey_hex : "00";
+    const int LONGEST_LEAF = 7;  // "packets"
+    int fixed  = (int)strlen(prefix) + 1 + (int)strlen(iata) + 1 + 1 + LONGEST_LEAF;
+    int keymax = MQTT_TOPIC_MAX - fixed; if (keymax < 0) keymax = 0;
+    int keylen = (int)strlen(key);   if (keylen > keymax) keylen = keymax;
+    snprintf(buf, n, "%s/%s/%.*s/%s", prefix, iata, keylen, key, l);
   }
 
   int isoTime(char* buf, int n) {
