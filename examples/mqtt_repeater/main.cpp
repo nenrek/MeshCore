@@ -282,6 +282,19 @@ void loop() {
   }
 
   the_mesh.loop();
+
+  // Feed observer telemetry to the bridge (board/mesh/radio live here, not in the
+  // bridge). Throttled — the values change slowly and the ADC read isn't free.
+  static unsigned long next_stats = 0;
+  if (millis() >= next_stats) {
+    next_stats = millis() + 5000;
+    mqtt.setStats(board.getBattMilliVolts(),
+                  (int16_t)radio_driver.getNoiseFloor(),
+                  (uint32_t)(the_mesh.getTotalAirTime() / 1000),
+                  (uint32_t)(the_mesh.getReceiveAirTime() / 1000),
+                  radio_driver.getPacketsRecvErrors());
+  }
+
   mqtt.loop();
   sensors.loop();
 #ifdef DISPLAY_CLASS
