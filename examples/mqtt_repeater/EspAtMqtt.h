@@ -102,6 +102,8 @@ class EspAtMqtt {
   // ---- runtime identity ----
   const char* _node_name;
   float _freq, _bw; uint8_t _sf, _cr;   // radio params for /status
+  uint16_t _batt_mv; int16_t _noise;    // observer telemetry (fed from main.cpp)
+  uint32_t _tx_air, _rx_air, _recv_err;
   char     _pubkey_hex[2 * PUB_KEY_SIZE + 1];
   char     _client_id[40];
 
@@ -407,17 +409,22 @@ class EspAtMqtt {
   // the observer "online" in Beacon between bursty mesh packets. (The MQTT-level
   // keepalive only keeps the broker connection up; Beacon ignores it.)
   void queueStatus() {
-    static char sj[256];
+    static char sj[512];
     // "radio" must be exactly "freq,bw,sf,cr" (MHz,kHz,sf,cr) or Beacon skips it.
+    // "stats" carries the observer telemetry Beacon charts (battery, noise floor,
+    // airtime TX/RX, receive errors, queue) — fed from main.cpp via setStats().
     snprintf(sj, sizeof(sj),
       "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
-      "\"origin_id\":\"%s\",\"radio\":\"%.3f,%.1f,%u,%u\","
-      "\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,"
+      "\"origin_id\":\"%s\",\"radio\":\"%.3f,%.1f,%u,%u\",\"stats\":{"
+      "\"uptime_secs\":%lu,\"battery_mv\":%u,\"noise_floor\":%d,\"queue_len\":%u,"
+      "\"tx_air_secs\":%lu,\"rx_air_secs\":%lu,\"recv_errors\":%lu,"
       "\"pkts_seen\":%lu,\"pub_ok\":%lu,\"pub_fail\":%lu}}",
       _node_name ? _node_name : "node", _pubkey_hex,
       (double)_freq, (double)_bw, (unsigned)_sf, (unsigned)_cr,
-      (unsigned long)(millis() / 1000), (unsigned)_qcount,
-      (unsigned long)_pkts_seen, (unsigned long)_pub_ok, (unsigned long)_pub_fail);
+      (unsigned long)(millis() / 1000), (unsigned)_batt_mv, (int)_noise,
+      (unsigned)_qcount, (unsigned long)_tx_air, (unsigned long)_rx_air,
+      (unsigned long)_recv_err, (unsigned long)_pkts_seen,
+      (unsigned long)_pub_ok, (unsigned long)_pub_fail);
     enqueue(LEAF_STATUS, sj, true);
   }
 
@@ -426,6 +433,7 @@ public:
     : _at(nullptr), _fs(nullptr), _rtc(nullptr),
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _freq(0), _bw(0), _sf(0), _cr(0),
+      _batt_mv(0), _noise(0), _tx_air(0), _rx_air(0), _recv_err(0),
       _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
       _pstate(PUB_IDLE), _pub_deadline(0), _next_status(0), _online_settle(0),
@@ -447,6 +455,13 @@ public:
   // wants exactly "freq,bw,sf,cr" or it skips the radio info).
   void setRadio(float freq, float bw, uint8_t sf, uint8_t cr) {
     _freq = freq; _bw = bw; _sf = sf; _cr = cr;
+  }
+  // Observer telemetry snapshot for the /status "stats" block. Pushed from the
+  // main loop (throttled) since the bridge can't reach board/mesh/radio directly.
+  void setStats(uint16_t batt_mv, int16_t noise, uint32_t tx_air_s,
+                uint32_t rx_air_s, uint32_t recv_err) {
+    _batt_mv = batt_mv; _noise = noise;
+    _tx_air = tx_air_s; _rx_air = rx_air_s; _recv_err = recv_err;
   }
   void setPubKey(const uint8_t* k, int len) {
     int n = len > PUB_KEY_SIZE ? PUB_KEY_SIZE : len;
@@ -519,6 +534,13 @@ public:
   // Only formats + enqueues — never touches the UART.
   void onPacketReceived(const mesh::Packet* pkt) {
     if (!_enabled || !pkt) return;
+    // Skip internally-generated packets that never came off the air with real
+    // radio metrics — the dispatcher leaves _snr==0 for these (multipart-ACK
+    // reconstruction, loopback). Publishing them pollutes the feed with bogus
+    // SNR 0.00 / stale-RSSI observations. Genuine receptions set _snr (Dispatcher
+    // sets pkt->_snr = getLastSNR()*4 on rx); a real SNR of exactly 0 is vanishingly
+    // rare and harmless to drop.
+    if (pkt->getSNR() == 0.0f) return;
     _pkts_seen++;
     if (_cstate != CS_ONLINE && _qcount >= MQTT_QUEUE_LEN) return;  // avoid churn while offline
 
