@@ -104,6 +104,9 @@ void setup() {
   mqtt.setRTC(&rtc_clock);
   mqtt.setNodeName(the_mesh.getNodeName());
   mqtt.setPubKey(the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  // Snapshot the configured LoRa params for the /status "radio" field.
+  { NodePrefs* pr = the_mesh.getNodePrefs();
+    if (pr) mqtt.setRadio(pr->freq, pr->bw, pr->sf, pr->cr); }
   mqtt.load(fs);
 
   tables.setBridge(&mqtt);

@@ -101,6 +101,7 @@ class EspAtMqtt {
 
   // ---- runtime identity ----
   const char* _node_name;
+  float _freq, _bw; uint8_t _sf, _cr;   // radio params for /status
   char     _pubkey_hex[2 * PUB_KEY_SIZE + 1];
   char     _client_id[40];
 
@@ -407,11 +408,14 @@ class EspAtMqtt {
   // keepalive only keeps the broker connection up; Beacon ignores it.)
   void queueStatus() {
     static char sj[256];
+    // "radio" must be exactly "freq,bw,sf,cr" (MHz,kHz,sf,cr) or Beacon skips it.
     snprintf(sj, sizeof(sj),
       "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
-      "\"origin_id\":\"%s\",\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,"
+      "\"origin_id\":\"%s\",\"radio\":\"%.3f,%.1f,%u,%u\","
+      "\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,"
       "\"pkts_seen\":%lu,\"pub_ok\":%lu,\"pub_fail\":%lu}}",
       _node_name ? _node_name : "node", _pubkey_hex,
+      (double)_freq, (double)_bw, (unsigned)_sf, (unsigned)_cr,
       (unsigned long)(millis() / 1000), (unsigned)_qcount,
       (unsigned long)_pkts_seen, (unsigned long)_pub_ok, (unsigned long)_pub_fail);
     enqueue(LEAF_STATUS, sj, true);
@@ -421,7 +425,8 @@ public:
   EspAtMqtt()
     : _at(nullptr), _fs(nullptr), _rtc(nullptr),
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
-      _node_name(nullptr), _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
+      _node_name(nullptr), _freq(0), _bw(0), _sf(0), _cr(0),
+      _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
       _pstate(PUB_IDLE), _pub_deadline(0), _next_status(0), _online_settle(0),
       _rxlen(0), _verbose(false), _wifi_got_ip(false),
@@ -438,6 +443,11 @@ public:
   void setStream(Stream* s)        { _at = s; }
   void setRTC(mesh::RTCClock* r)   { _rtc = r; }
   void setNodeName(const char* n)  { _node_name = n; }
+  // freq in MHz, bw in kHz, sf, cr — for the /status "radio" field (Beacon
+  // wants exactly "freq,bw,sf,cr" or it skips the radio info).
+  void setRadio(float freq, float bw, uint8_t sf, uint8_t cr) {
+    _freq = freq; _bw = bw; _sf = sf; _cr = cr;
+  }
   void setPubKey(const uint8_t* k, int len) {
     int n = len > PUB_KEY_SIZE ? PUB_KEY_SIZE : len;
     toHex(_pubkey_hex, k, n);
