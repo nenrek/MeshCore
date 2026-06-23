@@ -152,10 +152,13 @@ class EspAtMqtt {
   }
 
   // The RAK2305 ESP-AT build (ESP-IDF v4.0) caps MQTT topic strings at 64 chars
-  // (measured: 64 OK, 66 ERROR). The full 64-hex pubkey overflows that, so the
-  // key segment is truncated to fit. Budget is computed against the LONGEST leaf
-  // ("packets"=7) so the key is identical across status/packets/debug — the map
-  // correlates an observer's topics by that key.
+  // (measured: 62 OK, 83 ERROR, on both MQTTPUB and MQTTCONNCFG). The full 64-hex
+  // pubkey makes an 83-char topic that the firmware rejects outright, so the key
+  // segment MUST be truncated — the full key cannot live in the topic on this HW.
+  // The truncation is forced to an EVEN length so the consumer's hex-decode of the
+  // topic pubkey succeeds (odd-length hex fails to parse). The full untruncated key
+  // is carried in the payload's origin_id instead. Budget uses the LONGEST leaf
+  // ("packets"=7) so the key is identical across status/packets/debug.
   #define MQTT_TOPIC_MAX 64
   void topicFor(uint8_t leaf, char* buf, int n) {
     const char* l = (leaf == LEAF_STATUS) ? "status" : (leaf == LEAF_PACKETS) ? "packets" : "debug";
@@ -165,7 +168,9 @@ class EspAtMqtt {
     const int LONGEST_LEAF = 7;  // "packets"
     int fixed  = (int)strlen(prefix) + 1 + (int)strlen(iata) + 1 + 1 + LONGEST_LEAF;
     int keymax = MQTT_TOPIC_MAX - fixed; if (keymax < 0) keymax = 0;
+    keymax &= ~1;                                  // even budget -> valid hex
     int keylen = (int)strlen(key);   if (keylen > keymax) keylen = keymax;
+    keylen &= ~1;                                  // never emit an odd-length key
     snprintf(buf, n, "%s/%s/%.*s/%s", prefix, iata, keylen, key, l);
   }
 
@@ -290,8 +295,9 @@ class EspAtMqtt {
       static char sj[256];
       snprintf(sj, sizeof(sj),
         "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
+        "\"origin_id\":\"%s\","
         "\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,\"recv_errors\":%lu}}",
-        _node_name ? _node_name : "node",
+        _node_name ? _node_name : "node", _pubkey_hex,
         (unsigned long)(millis() / 1000), (unsigned)_qcount,
         (unsigned long)_pub_fail);
       enqueue(LEAF_STATUS, sj, true);         // retained JSON status
@@ -514,8 +520,8 @@ public:
     // failed with "malformed packet envelope". Keys must be exactly these, and
     // SNR/RSSI MUST be upper-case (lower-case is silently ignored -> 0).
     snprintf(p, sizeof(p),
-      "{\"raw\":\"%s\",\"timestamp\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
-      raw_hex, ts, (double)snr, rssi);
+      "{\"raw\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
+      raw_hex, _pubkey_hex, ts, (double)snr, rssi);
     enqueue(LEAF_PACKETS, p, false);
   }
 
