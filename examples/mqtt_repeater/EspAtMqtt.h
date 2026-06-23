@@ -43,8 +43,12 @@
 #ifndef MQTT_KEEPALIVE_S
   #define MQTT_KEEPALIVE_S        120
 #endif
-#ifndef MQTT_HEARTBEAT_MS
-  #define MQTT_HEARTBEAT_MS       60000UL
+#ifndef MQTT_STATUS_INTERVAL_MS
+  // Periodic /status keepalive. Beacon marks an observer online only if a /status
+  // OR /packets message arrived within the last 5 min (hardcoded server-side;
+  // /debug does not count). Refresh well inside that window so quiet gaps between
+  // bursty mesh packets don't flip the observer offline.
+  #define MQTT_STATUS_INTERVAL_MS 120000UL
 #endif
 #ifndef MQTT_BACKOFF_MIN_MS
   #define MQTT_BACKOFF_MIN_MS     5000UL
@@ -113,7 +117,7 @@ class EspAtMqtt {
   enum PState { PUB_IDLE, PUB_WAITPROMPT, PUB_WAITRESULT };
   PState   _pstate;
   unsigned long _pub_deadline;
-  unsigned long _next_heartbeat;
+  unsigned long _next_status;   // next periodic /status keepalive
   unsigned long _online_settle;   // hold first publish until this time after connect
 
   // ---- AT rx accumulator ----
@@ -295,19 +299,9 @@ class EspAtMqtt {
     if (_step == ST_PUBSTATUS) {
       _backoff_ms = MQTT_BACKOFF_MIN_MS;
       clearRx();                              // drop the connect-response residue
-      // Beacon json.Unmarshals /status — it must be a JSON object, not the bare
-      // word "online" (which threw "invalid character 'o'"). All fields optional.
-      static char sj[256];
-      snprintf(sj, sizeof(sj),
-        "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
-        "\"origin_id\":\"%s\","
-        "\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,\"recv_errors\":%lu}}",
-        _node_name ? _node_name : "node", _pubkey_hex,
-        (unsigned long)(millis() / 1000), (unsigned)_qcount,
-        (unsigned long)_pub_fail);
-      enqueue(LEAF_STATUS, sj, true);         // retained JSON status
+      queueStatus();                          // retained JSON /status on connect
       _online_settle = now + MQTT_ONLINE_SETTLE_MS;
-      _next_heartbeat = now + 2000;
+      _next_status = now + MQTT_STATUS_INTERVAL_MS;
       _pstate = PUB_IDLE;
       _cstate = CS_ONLINE;
       Serial.printf("[MQTT] online: %s:%u scheme=%u as %s\n",
@@ -369,9 +363,9 @@ class EspAtMqtt {
       case PUB_IDLE: {
         PubItem* it = qfront();
         if (!it) {  // nothing queued — heartbeat if due
-          if ((long)(now - _next_heartbeat) >= 0) {
-            queueHeartbeat();
-            _next_heartbeat = now + MQTT_HEARTBEAT_MS;
+          if ((long)(now - _next_status) >= 0) {
+            queueStatus();
+            _next_status = now + MQTT_STATUS_INTERVAL_MS;
           }
           return;
         }
@@ -407,17 +401,20 @@ class EspAtMqtt {
     }
   }
 
-  void queueHeartbeat() {
-    char ts[40]; isoTime(ts, sizeof(ts));
-    static char p[MQTT_MAX_PAYLOAD];  // 1KB — keep off the stack
-    snprintf(p, sizeof(p),
-      "{\"origin\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\","
-      "\"type\":\"HEARTBEAT\",\"uptime_s\":%lu,\"pkts\":%lu,"
-      "\"pub_ok\":%lu,\"pub_fail\":%lu,\"q_drops\":%lu}",
-      _node_name ? _node_name : "node", _pubkey_hex, ts,
-      (unsigned long)(millis() / 1000), (unsigned long)_pkts_seen,
-      (unsigned long)_pub_ok, (unsigned long)_pub_fail, (unsigned long)_q_drops);
-    enqueue(LEAF_DEBUG, p, false);
+  // Build + enqueue a retained JSON /status. Published on connect and every
+  // MQTT_STATUS_INTERVAL_MS — this is the application-level keepalive that holds
+  // the observer "online" in Beacon between bursty mesh packets. (The MQTT-level
+  // keepalive only keeps the broker connection up; Beacon ignores it.)
+  void queueStatus() {
+    static char sj[256];
+    snprintf(sj, sizeof(sj),
+      "{\"source\":\"meshcoretomqtt\",\"model\":\"RAK3401\",\"origin\":\"%s\","
+      "\"origin_id\":\"%s\",\"stats\":{\"uptime_secs\":%lu,\"queue_len\":%u,"
+      "\"pkts_seen\":%lu,\"pub_ok\":%lu,\"pub_fail\":%lu}}",
+      _node_name ? _node_name : "node", _pubkey_hex,
+      (unsigned long)(millis() / 1000), (unsigned)_qcount,
+      (unsigned long)_pkts_seen, (unsigned long)_pub_ok, (unsigned long)_pub_fail);
+    enqueue(LEAF_STATUS, sj, true);
   }
 
 public:
@@ -426,7 +423,7 @@ public:
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
-      _pstate(PUB_IDLE), _pub_deadline(0), _next_heartbeat(0), _online_settle(0),
+      _pstate(PUB_IDLE), _pub_deadline(0), _next_status(0), _online_settle(0),
       _rxlen(0), _verbose(false), _wifi_got_ip(false),
       _hw_seen(false), _no_hw(false), _bringup_fails(0),
       _qhead(0), _qtail(0), _qcount(0),
