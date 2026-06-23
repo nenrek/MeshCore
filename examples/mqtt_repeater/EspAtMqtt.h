@@ -55,6 +55,10 @@
   // publish, and can wedge/reset the ESP-AT stack).
   #define MQTT_ONLINE_SETTLE_MS   1000UL
 #endif
+#ifndef MQTT_PUBFAIL_RECONNECT
+  // Consecutive publish failures that force a reconnect (stale-link backstop).
+  #define MQTT_PUBFAIL_RECONNECT  5
+#endif
 #ifndef MQTT_BACKOFF_MAX_MS
   #define MQTT_BACKOFF_MAX_MS     60000UL
 #endif
@@ -128,6 +132,7 @@ class EspAtMqtt {
 
   // ---- counters ----
   uint32_t _pub_ok, _pub_fail, _pkts_seen, _q_drops, _conn_attempts;
+  uint16_t _pub_fail_run;   // consecutive publish failures -> reconnect backstop
 
   // bring-up steps
   enum { ST_ATE0, ST_CWMODE, ST_CWJAP, ST_USERCFG, ST_CONNCFG, ST_CONN, ST_PUBSTATUS, ST_DONE };
@@ -346,6 +351,16 @@ class EspAtMqtt {
   /* ===================== steady-state publish ===================== */
   void serviceOnline(unsigned long now) {
     if (seen("+MQTTDISCONNECTED")) { failBringup("disconnected"); return; }
+    // The ESP can brown-out/reset under WiFi load and silently drop MQTT without
+    // a +MQTTDISCONNECTED — leaving us "online" but publishing into a dead socket
+    // forever. Detect a reset (boot banner) or an unsolicited WiFi re-association,
+    // and reconnect. The publish-failure run is the backstop for any other stall
+    // (covers the active case; the banner/re-assoc covers the idle case).
+    if (seen("ready\r\n") || seen("WIFI GOT IP")) { failBringup("esp reset"); return; }
+    if (_pub_fail_run >= MQTT_PUBFAIL_RECONNECT) {
+      Serial.println("[MQTT] publish stall — forcing reconnect");
+      _pub_fail_run = 0; failBringup("pub stall"); return;
+    }
     // Post-connect settle: don't start the first publish (or a heartbeat) until
     // the ESP has finished the connect handshake — avoids the busy/race.
     if (_pstate == PUB_IDLE && (long)(now - _online_settle) < 0) return;
@@ -379,14 +394,14 @@ class EspAtMqtt {
           _pstate = PUB_WAITRESULT;
           _pub_deadline = now + 10000;
         } else if (sawError() || (long)(now - _pub_deadline) >= 0) {
-          qpop(); _pub_fail++; _pstate = PUB_IDLE;
+          qpop(); _pub_fail++; _pub_fail_run++; _pstate = PUB_IDLE;
         }
         break;
       }
       case PUB_WAITRESULT: {
-        if (seen("+MQTTPUB:OK"))        { qpop(); _pub_ok++;   _pstate = PUB_IDLE; }
-        else if (seen("+MQTTPUB:FAIL")) { qpop(); _pub_fail++; _pstate = PUB_IDLE; }
-        else if ((long)(now - _pub_deadline) >= 0) { qpop(); _pub_fail++; _pstate = PUB_IDLE; }
+        if (seen("+MQTTPUB:OK"))        { qpop(); _pub_ok++; _pub_fail_run = 0; _pstate = PUB_IDLE; }
+        else if (seen("+MQTTPUB:FAIL")) { qpop(); _pub_fail++; _pub_fail_run++; _pstate = PUB_IDLE; }
+        else if ((long)(now - _pub_deadline) >= 0) { qpop(); _pub_fail++; _pub_fail_run++; _pstate = PUB_IDLE; }
         break;
       }
     }
@@ -415,7 +430,8 @@ public:
       _rxlen(0), _verbose(false), _wifi_got_ip(false),
       _hw_seen(false), _no_hw(false), _bringup_fails(0),
       _qhead(0), _qtail(0), _qcount(0),
-      _pub_ok(0), _pub_fail(0), _pkts_seen(0), _q_drops(0), _conn_attempts(0)
+      _pub_ok(0), _pub_fail(0), _pkts_seen(0), _q_drops(0), _conn_attempts(0),
+      _pub_fail_run(0)
   {
     _ssid[0] = _wifi_pass[0] = _host[0] = _user[0] = _pass[0] = 0;
     _ws_path[0] = _iata[0] = _pubkey_hex[0] = _client_id[0] = 0;
