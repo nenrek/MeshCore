@@ -151,10 +151,18 @@ private:
   float pending_bw;
   uint8_t pending_sf;
   uint8_t pending_cr;
+  // Deferred self-advert. createSelfAdvert() Ed25519-signs the packet (~1.5KB of
+  // stack). Triggered from a remote admin command it runs deep in the RX call
+  // chain and overflows the 4KB loop task -> HardFault/hang. So sendSelfAdvertisement()
+  // only records intent here; loop() does the actual create+sign at a shallow stack.
+  bool _advert_pending;
+  bool _advert_flood;
+  int  _advert_delay;
 
   uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
   uint8_t handleRequest(uint8_t perms, uint32_t sender_timestamp, uint8_t req_type, uint8_t* payload, size_t payload_len);
   mesh::Packet* createSelfAdvert();
+  void serviceAdvert();   // drains a deferred self-advert at the shallow loop() stack
 
   void sendAlert(const ClientInfo* c, Trigger* t);
 
