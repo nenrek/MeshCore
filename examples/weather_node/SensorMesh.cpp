@@ -705,6 +705,7 @@ SensorMesh::SensorMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Millise
   last_read_time = 0;
   num_alert_tasks = 0;
   set_radio_at = revert_radio_at = 0;
+  _advert_pending = false;
 
   // defaults
   memset(&_prefs, 0, sizeof(_prefs));
@@ -814,15 +815,35 @@ void SensorMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t 
 }
 
 void SensorMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
+  // Defer the create+sign to loop() — see _advert_pending in the header. Doing it
+  // here would run the Ed25519 signing on whatever stack called us, which for a
+  // remote admin "advert" command is deep in the RX chain and overflows the stack.
+  _advert_pending = true;
+  _advert_flood   = flood;
+  _advert_delay   = delay_millis;
+}
+
+// Runs at the shallow loop() stack, where Ed25519 signing safely fits.
+void SensorMesh::serviceAdvert() {
+  if (!_advert_pending) return;
+  _advert_pending = false;
   mesh::Packet* pkt = createSelfAdvert();
   if (pkt) {
-    if (flood) {
-      sendFlood(pkt, delay_millis, _prefs.path_hash_mode + 1);
+    if (_advert_flood) {
+      sendFlood(pkt, _advert_delay, _prefs.path_hash_mode + 1);
     } else {
-      sendZeroHop(pkt, delay_millis);
+      sendZeroHop(pkt, _advert_delay);
     }
   } else {
     MESH_DEBUG_PRINTLN("ERROR: unable to create advertisement packet!");
+  }
+  // Stack-overflow watchdog: report the loop task's minimum-ever free stack right
+  // after the (heaviest) signing op. Healthy after this fix; a low number would
+  // flag any other deep-stack path that still risks the 4KB loop stack.
+  UBaseType_t hw_words = uxTaskGetStackHighWaterMark(NULL);
+  if (hw_words < 192) {  // < ~768 bytes free — getting close
+    Serial.printf("[STACK] WARNING: loop free min %u words (%u bytes)\n",
+                  (unsigned)hw_words, (unsigned)(hw_words * 4));
   }
 }
 
@@ -891,6 +912,8 @@ bool  SensorMesh::getGPS(uint8_t channel, float& lat, float& lon, float& alt) {
 
 void SensorMesh::loop() {
   mesh::Mesh::loop();
+
+  serviceAdvert();   // do any deferred self-advert here (shallow stack, safe to sign)
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
     mesh::Packet* pkt = createSelfAdvert();
