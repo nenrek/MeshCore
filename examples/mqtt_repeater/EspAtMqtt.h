@@ -63,6 +63,14 @@
   // Consecutive publish failures that force a reconnect (stale-link backstop).
   #define MQTT_PUBFAIL_RECONNECT  5
 #endif
+#ifndef MQTT_RSSI_FEM_OFFSET
+  // dB subtracted from the SX1262's reported RSSI to recover antenna-referred
+  // power on the RAK13302 1W module: its SKY66122 LNA adds ~13-15 dB of RX gain
+  // that the radio doesn't account for. Starting estimate — calibrate empirically
+  // against a non-FEM reference node and adjust with `mqtt rssioffset <dB>`.
+  // 0 = raw RSSI (for non-FEM boards).
+  #define MQTT_RSSI_FEM_OFFSET    13
+#endif
 #ifndef MQTT_BACKOFF_MAX_MS
   #define MQTT_BACKOFF_MAX_MS     60000UL
 #endif
@@ -104,6 +112,7 @@ class EspAtMqtt {
   float _freq, _bw; uint8_t _sf, _cr;   // radio params for /status
   uint16_t _batt_mv; int16_t _noise;    // observer telemetry (fed from main.cpp)
   uint32_t _tx_air, _rx_air, _recv_err;
+  int8_t   _rssi_offset;                 // dB subtracted from reported RSSI (FEM/LNA gain)
   char     _pubkey_hex[2 * PUB_KEY_SIZE + 1];
   char     _client_id[40];
 
@@ -434,6 +443,7 @@ public:
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _freq(0), _bw(0), _sf(0), _cr(0),
       _batt_mv(0), _noise(0), _tx_air(0), _rx_air(0), _recv_err(0),
+      _rssi_offset(MQTT_RSSI_FEM_OFFSET),
       _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
       _pstate(PUB_IDLE), _pub_deadline(0), _next_status(0), _online_settle(0),
@@ -502,6 +512,8 @@ public:
     val(buf, "wspath=",  _ws_path, sizeof(_ws_path));
     val(buf, "prefix=",  _prefix, sizeof(_prefix));
     val(buf, "iata=",    _iata, sizeof(_iata));
+    tmp[0] = 0;
+    val(buf, "rssioff=", tmp, sizeof(tmp)); if (tmp[0]) _rssi_offset = (int8_t)atoi(tmp);
     Serial.printf("[MQTT] cfg: en=%d ssid=%s host=%s:%u scheme=%u iata=%s\n",
                   (int)_enabled, _ssid, _host, (unsigned)_port, (unsigned)_scheme,
                   _iata[0] ? _iata : "(unset)");
@@ -521,9 +533,9 @@ public:
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
       "enabled=%d\nssid=%s\nwpass=%s\nhost=%s\nport=%u\nscheme=%u\n"
-      "user=%s\nmpass=%s\nwspath=%s\nprefix=%s\niata=%s\n",
+      "user=%s\nmpass=%s\nwspath=%s\nprefix=%s\niata=%s\nrssioff=%d\n",
       (int)_enabled, _ssid, _wifi_pass, _host, (unsigned)_port, (unsigned)_scheme,
-      _user, _pass, _ws_path, _prefix, _iata);
+      _user, _pass, _ws_path, _prefix, _iata, (int)_rssi_offset);
     int w = f.write((const uint8_t*)buf, n);
     f.close();
     if (w != n) Serial.printf("[MQTT] save FAILED: short write %d/%d\n", w, n);
@@ -555,7 +567,9 @@ public:
     toHex(raw_hex, raw, raw_len);
 
     char ts[40]; isoTime(ts, sizeof(ts));
-    int rssi = (int)radio_driver.getLastRSSI();
+    // Correct for the RAK13302 FEM/LNA gain so RSSI is antenna-referred (see
+    // _rssi_offset / `mqtt rssioffset`). SNR is unaffected by the LNA.
+    int rssi = (int)radio_driver.getLastRSSI() - _rssi_offset;
     float snr = pkt->getSNR();
 
     // Minimal meshcoretomqtt packet envelope (Beacon / meshmapper). `raw` is the
@@ -651,6 +665,8 @@ public:
     if (strncmp(cmd, "mqtt path ", 10) == 0) { strncpy(_ws_path, cmd + 10, sizeof(_ws_path)-1); _ws_path[sizeof(_ws_path)-1]=0; save(); snprintf(reply,160,"WS path: %s",_ws_path); return true; }
     if (strncmp(cmd, "mqtt prefix ", 12) == 0){ strncpy(_prefix, cmd + 12, sizeof(_prefix)-1); _prefix[sizeof(_prefix)-1]=0; save(); snprintf(reply,160,"Prefix: %s",_prefix); return true; }
     if (strncmp(cmd, "mqtt iata ", 10) == 0) { strncpy(_iata, cmd + 10, sizeof(_iata)-1); _iata[sizeof(_iata)-1]=0; for(char*p=_iata;*p;p++)*p=toupper((int)*p); save(); snprintf(reply,160,"IATA: %s",_iata); return true; }
+    if (strncmp(cmd, "mqtt rssioffset ", 16) == 0){ _rssi_offset = (int8_t)atoi(cmd + 16); save(); snprintf(reply,160,"RSSI offset: %d dB (reported - offset)",(int)_rssi_offset); return true; }
+    if (strcmp(cmd, "mqtt rssioffset") == 0)       { snprintf(reply,160,"RSSI offset: %d dB",(int)_rssi_offset); return true; }
     if (strcmp(cmd, "mqtt pubkey") == 0)    { snprintf(reply,160,"PubKey: %s",_pubkey_hex); return true; }
     if (strcmp(cmd, "mqtt verbose on") == 0){ _verbose = true;  strcpy(reply,"AT trace ON"); return true; }
     if (strcmp(cmd, "mqtt verbose off")== 0){ _verbose = false; strcpy(reply,"AT trace OFF"); return true; }
@@ -668,7 +684,7 @@ public:
       Serial.println("wifi ssid <s> / wifi pass <p>");
       Serial.println("mqtt host <h> / port <n> / scheme <1|7|8>");
       Serial.println("mqtt user <u> / mpass <p> / path <wspath>");
-      Serial.println("mqtt prefix <p> / iata <CODE> / pubkey");
+      Serial.println("mqtt prefix <p> / iata <CODE> / pubkey / rssioffset <dB>");
       Serial.println("mqtt on / off / retry / status / test / verbose on|off");
       Serial.println("debug: mqtt cfg / mqtt at <raw AT cmd> / mqtt baud <n>  (use with mqtt off)");
       strcpy(reply, "See Serial output");
