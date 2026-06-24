@@ -70,31 +70,6 @@ class NWSClient {
     return NWS_SEV_ALL; // Unknown
   }
 
-  // Distill a short, human-useful hazard line from an NWS alert description.
-  // Modern NWS descriptions are structured as "* WHAT...<hazard> * WHERE... * WHEN...".
-  // We prefer the WHAT section (the actual hazard, e.g. "Wind gusts up to 50 mph and
-  // pea size hail") and stop at the next section; otherwise we fall back to the first
-  // chunk of free text. Newlines/tabs are collapsed to single spaces.
-  static void extractSummary(const char* desc, char* out, int outSize) {
-    out[0] = 0;
-    if (!desc || !*desc || outSize < 2) return;
-    const char* src = desc;
-    bool bounded = false;
-    const char* what = strstr(desc, "WHAT...");
-    if (what) { src = what + 7; bounded = true; }  // skip past "WHAT..."
-    int o = 0; bool prev_space = false;
-    for (const char* p = src; *p && o < outSize - 1; p++) {
-      char c = *p;
-      if (bounded && c == '*') break;              // next NWS section -> stop
-      if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
-        if (!prev_space && o > 0) { out[o++] = ' '; prev_space = true; }
-        continue;
-      }
-      out[o++] = c; prev_space = false;
-    }
-    while (o > 0 && out[o - 1] == ' ') o--;          // trim trailing space
-    out[o] = 0;
-  }
 
   void generateMAC() {
     uint32_t id0 = NRF_FICR->DEVICEID[0];
@@ -123,6 +98,32 @@ class NWSClient {
   }
 
 public:
+  // Distill a short, human-useful hazard line from an NWS alert description.
+  // Modern NWS descriptions are structured as "* WHAT...<hazard> * WHERE... * WHEN...".
+  // We prefer the WHAT section (the actual hazard, e.g. "Wind gusts up to 50 mph and
+  // pea size hail") and stop at the next section; otherwise we fall back to the first
+  // chunk of free text. Newlines/tabs are collapsed to single spaces.
+  static void extractSummary(const char* desc, char* out, int outSize) {
+    out[0] = 0;
+    if (!desc || !*desc || outSize < 2) return;
+    const char* src = desc;
+    bool bounded = false;
+    const char* what = strstr(desc, "WHAT...");
+    if (what) { src = what + 7; bounded = true; }  // skip past "WHAT..."
+    int o = 0; bool prev_space = false;
+    for (const char* p = src; *p && o < outSize - 1; p++) {
+      char c = *p;
+      if (bounded && c == '*') break;              // next NWS section -> stop
+      if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+        if (!prev_space && o > 0) { out[o++] = ' '; prev_space = true; }
+        continue;
+      }
+      out[o++] = c; prev_space = false;
+    }
+    while (o > 0 && out[o - 1] == ' ') o--;          // trim trailing space
+    out[o] = 0;
+  }
+
   NWSClient() : _eth_ready(false), _num_alerts(0), _num_sent(0), _min_severity(NWS_SEV_SEVERE) {
     generateMAC();
     memset(_alerts, 0, sizeof(_alerts));
