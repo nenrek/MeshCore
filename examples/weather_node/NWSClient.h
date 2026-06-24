@@ -39,6 +39,7 @@ struct NWSAlert {
   char severity[16];
   char headline[140];
   char summary[160];   // hazard summary distilled from the alert description
+  char meta[80];       // "Issued <date/time> by <office>" (from sent + senderName)
   char id_hash[16];
 };
 
@@ -122,6 +123,19 @@ public:
     }
     while (o > 0 && out[o - 1] == ' ') o--;          // trim trailing space
     out[o] = 0;
+  }
+
+  // Format an ISO8601 'sent' time ("2026-06-24T15:00:00-05:00") into a compact
+  // local 12-hour string like "6/24 3:00PM". The HH:MM is already alert-local
+  // (the trailing offset is the area's zone), so no conversion is needed.
+  static void formatIssued(const char* iso, char* out, int outSize) {
+    out[0] = 0;
+    if (!iso || strlen(iso) < 16) return;
+    int mon = atoi(iso + 5), day = atoi(iso + 8);
+    int hour = atoi(iso + 11), min = atoi(iso + 14);
+    const char* ap = (hour < 12) ? "AM" : "PM";
+    int h12 = hour % 12; if (h12 == 0) h12 = 12;
+    snprintf(out, outSize, "%d/%d %d:%02d%s", mon, day, h12, min, ap);
   }
 
   NWSClient() : _eth_ready(false), _num_alerts(0), _num_sent(0), _min_severity(NWS_SEV_SEVERE) {
@@ -292,6 +306,16 @@ public:
       strncpy(_alerts[_num_alerts].headline, props["headline"] | "", 139);
       extractSummary(props["description"] | "", _alerts[_num_alerts].summary,
                      sizeof(_alerts[_num_alerts].summary));
+      char issued[20];
+      formatIssued(props["sent"] | "", issued, sizeof(issued));
+      const char* office = props["senderName"] | "NWS";
+      if (issued[0]) {
+        snprintf(_alerts[_num_alerts].meta, sizeof(_alerts[_num_alerts].meta),
+                 "Issued %s by %s", issued, office);
+      } else {
+        snprintf(_alerts[_num_alerts].meta, sizeof(_alerts[_num_alerts].meta),
+                 "Issued by %s", office);
+      }
       
       unsigned long hash = 5381;
       const char* id = feature["id"] | "";
@@ -335,6 +359,12 @@ public:
     const char* s = _alerts[idx].summary[0] ? _alerts[idx].summary
                                             : _alerts[idx].headline;
     return snprintf(buf, bufSize, "%s", s);
+  }
+
+  // Issuance metadata: "Issued <date/time> by <office>".
+  int formatMeta(int idx, char* buf, int bufSize) const {
+    if (idx < 0 || idx >= _num_alerts) return 0;
+    return snprintf(buf, bufSize, "%s", _alerts[idx].meta);
   }
 
   // Legacy single-line format, used by CLI "nws alerts"

@@ -444,9 +444,14 @@ protected:
         "pea size hail.\n* WHERE...Outagamie County.\n* WHEN...Until 515 PM CDT.";
       char summary[160];
       NWSClient::extractSummary(sample_desc, summary, sizeof(summary));
-      Serial.print("[NWS-TEST] summary: "); Serial.println(summary);
-      broadcastWeatherAlert("[Test] Special Weather Statement", summary);
-      strcpy(reply, "Test alert sent (sample summary)");
+      char issued[20];
+      NWSClient::formatIssued("2026-06-24T15:00:00-05:00", issued, sizeof(issued));
+      char meta[80];
+      snprintf(meta, sizeof(meta), "Issued %s by NWS Green Bay WI", issued);
+      Serial.print("[NWS-TEST] 2/3: "); Serial.println(summary);
+      Serial.print("[NWS-TEST] 3/3: "); Serial.println(meta);
+      broadcastWeatherAlert("[Test] Special Weather Statement", summary, meta);
+      strcpy(reply, "Test alert sent (3 parts)");
       return true;
     }
 
@@ -653,28 +658,31 @@ protected:
     Serial.println("[NWS] Weekly channel announcement sent to public channel");
   }
 
-  // Broadcast header + detail to the severe weather channel
-  void broadcastWeatherAlert(const char* header, const char* detail) {
-    const char* name = getDisplayName();
-    uint32_t base_delay = getRNG()->nextInt(500, 2000);
-
-    // Packet 1: "<name>: [Severity] Event Type"
-    char msg1[160];
-    snprintf(msg1, sizeof(msg1), "%s: %s", name, header);
-    sendGroupMsg(_severe_key, msg1, base_delay);
-
-    // Packet 2: "<name>: <headline>" — max body 163 chars, trim at word boundary if needed
+  // Send one part of a multi-part alert: "<name>: (i/total) <text>", trimmed at a
+  // word boundary to the 163-char channel body limit.
+  void sendAlertPart(const char* text, int idx, int total, uint32_t delay) {
     const int MAX_BODY = 163;
-    int prefix_len = strlen(name) + 2; // ": "
-    int max_detail = MAX_BODY - prefix_len;
-    char detail_buf[160];
-    snprintf(detail_buf, sizeof(detail_buf), "%s: %.*s", name, max_detail, detail);
-    if ((int)strlen(detail) > max_detail) {
-      // Walk back to last word boundary after the name prefix
-      char* last_space = strrchr(detail_buf + prefix_len, ' ');
-      if (last_space) *last_space = 0;
+    char body[176];
+    int n = snprintf(body, sizeof(body), "%s: (%d/%d) %s",
+                     getDisplayName(), idx, total, text);
+    if (n > MAX_BODY) {                 // too long -> trim back to a word boundary
+      body[MAX_BODY] = 0;
+      char* last_space = strrchr(body, ' ');
+      if (last_space && last_space > body) *last_space = 0;
     }
-    sendGroupMsg(_severe_key, detail_buf, base_delay + 4000);
+    sendGroupMsg(_severe_key, body, delay);
+  }
+
+  // Broadcast a 3-part alert to the severe weather channel, staggered ~4s apart and
+  // tagged (1/3)(2/3)(3/3) so the receiver can see they belong to one alert:
+  //   1/3 header   "[Severity] Event"
+  //   2/3 detail   distilled hazard summary
+  //   3/3 meta     "Issued <date/time> by <office>"
+  void broadcastWeatherAlert(const char* header, const char* detail, const char* meta) {
+    uint32_t base_delay = getRNG()->nextInt(500, 2000);
+    sendAlertPart(header, 1, 3, base_delay);
+    sendAlertPart(detail, 2, 3, base_delay + 4000);
+    sendAlertPart(meta,   3, 3, base_delay + 8000);
 
     _alerts_sent_total++;
     _display_data.alerts_sent_total = _alerts_sent_total;
@@ -749,13 +757,15 @@ public:
         if (_nws->isAlertNew(_pending_alert_idx) && _nws->isAlertAboveThreshold(_pending_alert_idx)) {
           char header[80];
           char detail[160];
+          char meta[80];
           _nws->formatHeader(_pending_alert_idx, header, sizeof(header));
           _nws->formatDetail(_pending_alert_idx, detail, sizeof(detail));
-          broadcastWeatherAlert(header, detail);
+          _nws->formatMeta(_pending_alert_idx, meta, sizeof(meta));
+          broadcastWeatherAlert(header, detail, meta);
           _nws->markAlertSent(_pending_alert_idx);
           _pending_alert_idx++;
           found = true;
-          _next_mesh_broadcast = futureMillis(15000);
+          _next_mesh_broadcast = futureMillis(20000);  // 3 parts span ~8s; leave buffer
           break;
         }
         _pending_alert_idx++;
