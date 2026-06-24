@@ -38,6 +38,7 @@ struct NWSAlert {
   char event[48];
   char severity[16];
   char headline[140];
+  char summary[160];   // hazard summary distilled from the alert description
   char id_hash[16];
 };
 
@@ -67,6 +68,32 @@ class NWSClient {
     if (strcasecmp(sev, "Moderate") == 0) return NWS_SEV_MODERATE;
     if (strcasecmp(sev, "Minor") == 0)    return NWS_SEV_MINOR;
     return NWS_SEV_ALL; // Unknown
+  }
+
+  // Distill a short, human-useful hazard line from an NWS alert description.
+  // Modern NWS descriptions are structured as "* WHAT...<hazard> * WHERE... * WHEN...".
+  // We prefer the WHAT section (the actual hazard, e.g. "Wind gusts up to 50 mph and
+  // pea size hail") and stop at the next section; otherwise we fall back to the first
+  // chunk of free text. Newlines/tabs are collapsed to single spaces.
+  static void extractSummary(const char* desc, char* out, int outSize) {
+    out[0] = 0;
+    if (!desc || !*desc || outSize < 2) return;
+    const char* src = desc;
+    bool bounded = false;
+    const char* what = strstr(desc, "WHAT...");
+    if (what) { src = what + 7; bounded = true; }  // skip past "WHAT..."
+    int o = 0; bool prev_space = false;
+    for (const char* p = src; *p && o < outSize - 1; p++) {
+      char c = *p;
+      if (bounded && c == '*') break;              // next NWS section -> stop
+      if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+        if (!prev_space && o > 0) { out[o++] = ' '; prev_space = true; }
+        continue;
+      }
+      out[o++] = c; prev_space = false;
+    }
+    while (o > 0 && out[o - 1] == ' ') o--;          // trim trailing space
+    out[o] = 0;
   }
 
   void generateMAC() {
@@ -262,6 +289,8 @@ public:
       strncpy(_alerts[_num_alerts].event, props["event"] | "Unknown", 47);
       strncpy(_alerts[_num_alerts].severity, props["severity"] | "Unknown", 15);
       strncpy(_alerts[_num_alerts].headline, props["headline"] | "", 139);
+      extractSummary(props["description"] | "", _alerts[_num_alerts].summary,
+                     sizeof(_alerts[_num_alerts].summary));
       
       unsigned long hash = 5381;
       const char* id = feature["id"] | "";
@@ -297,10 +326,14 @@ public:
     return snprintf(buf, bufSize, "[%s] %s", _alerts[idx].severity, _alerts[idx].event);
   }
 
-  // Full headline detail text
+  // Detail text: the distilled hazard summary (what the alert is actually about),
+  // falling back to the headline when the description had no usable content. This
+  // is what makes e.g. a "Special Weather Statement" say what the statement is.
   int formatDetail(int idx, char* buf, int bufSize) const {
     if (idx < 0 || idx >= _num_alerts) return 0;
-    return snprintf(buf, bufSize, "%s", _alerts[idx].headline);
+    const char* s = _alerts[idx].summary[0] ? _alerts[idx].summary
+                                            : _alerts[idx].headline;
+    return snprintf(buf, bufSize, "%s", s);
   }
 
   // Legacy single-line format, used by CLI "nws alerts"
