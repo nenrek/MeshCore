@@ -436,8 +436,17 @@ protected:
     }
 
     if (strcmp(command, "nws test") == 0) {
-      broadcastWeatherAlert("[Test] NWS Alert Test", "NWS node is operational. Weather alert broadcast test.");
-      strcpy(reply, "Test alert sent");
+      // Demonstrate the live summary pipeline: a sample NWS-format description run
+      // through the same extractSummary() a real alert uses, so you can eyeball the
+      // notification format without waiting on real weather.
+      static const char* sample_desc =
+        "* WHAT...Strong thunderstorms producing wind gusts up to 50 mph and "
+        "pea size hail.\n* WHERE...Outagamie County.\n* WHEN...Until 515 PM CDT.";
+      char summary[160];
+      NWSClient::extractSummary(sample_desc, summary, sizeof(summary));
+      Serial.print("[NWS-TEST] summary: "); Serial.println(summary);
+      broadcastWeatherAlert("[Test] Special Weather Statement", summary);
+      strcpy(reply, "Test alert sent (sample summary)");
       return true;
     }
 
