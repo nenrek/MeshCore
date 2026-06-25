@@ -865,6 +865,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_local_advert = next_flood_advert = 0;
   dirty_contacts_expiry = 0;
   set_radio_at = revert_radio_at = 0;
+  _advert_pending = false;
   _logging = false;
   region_load_active = false;
 
@@ -1011,12 +1012,25 @@ bool MyMesh::formatFileSystem() {
 }
 
 void MyMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
+  // Defer the create+sign to loop() — see _advert_pending in the header.
+  // createSelfAdvert() Ed25519-signs (~1.5KB stack); doing it here when called from
+  // a remote admin "advert" command runs that signing deep in the RX call chain and
+  // can overflow the 4KB loop task stack -> HardFault/hang.
+  _advert_pending = true;
+  _advert_flood   = flood;
+  _advert_delay   = delay_millis;
+}
+
+// Runs at the shallow loop() stack, where Ed25519 signing safely fits.
+void MyMesh::serviceAdvert() {
+  if (!_advert_pending) return;
+  _advert_pending = false;
   mesh::Packet *pkt = createSelfAdvert();
   if (pkt) {
-    if (flood) {
-      sendFloodScoped(default_scope, pkt, delay_millis, _prefs.path_hash_mode + 1);
+    if (_advert_flood) {
+      sendFloodScoped(default_scope, pkt, _advert_delay, _prefs.path_hash_mode + 1);
     } else {
-      sendZeroHop(pkt, delay_millis);
+      sendZeroHop(pkt, _advert_delay);
     }
   } else {
     MESH_DEBUG_PRINTLN("ERROR: unable to create advertisement packet!");
@@ -1268,6 +1282,8 @@ void MyMesh::loop() {
 #endif
 
   mesh::Mesh::loop();
+
+  serviceAdvert();   // drain any deferred self-advert here (shallow stack, safe to sign)
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
     mesh::Packet *pkt = createSelfAdvert();

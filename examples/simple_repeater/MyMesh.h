@@ -85,6 +85,11 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint32_t last_millis;
   uint64_t uptime_millis;
   unsigned long next_local_advert, next_flood_advert;
+  // Deferred self-advert (see sendSelfAdvertisement/serviceAdvert) — keeps the
+  // Ed25519 advert signing off the deep RX stack so a remote admin "advert" can't
+  // overflow the 4KB loop task.
+  bool _advert_pending, _advert_flood;
+  int  _advert_delay;
   bool _logging;
   NodePrefs _prefs;
   ClientACL  acl;
@@ -126,6 +131,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   uint8_t handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
   mesh::Packet* createSelfAdvert();
+  void serviceAdvert();   // drains a deferred self-advert at the shallow loop() stack
 
   File openAppend(const char* fname);
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
