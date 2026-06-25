@@ -71,6 +71,13 @@
   // 0 = raw RSSI (for non-FEM boards).
   #define MQTT_RSSI_FEM_OFFSET    13
 #endif
+#ifndef MQTT_RFPOWER_DEFAULT
+  // ESP-AT WiFi TX power cap, in 0.25 dBm units (module default is 78 = 19.5 dBm).
+  // Lowering it cuts the WiFi current spikes that brown out the RAK2305 on a weak
+  // rail. 52 = 13 dBm — a solid reduction that still associates from in-building.
+  // Range ~8-84; set 78 to disable the reduction. Tune with `mqtt rfpower <n>`.
+  #define MQTT_RFPOWER_DEFAULT    52
+#endif
 #ifndef MQTT_BACKOFF_MAX_MS
   #define MQTT_BACKOFF_MAX_MS     60000UL
 #endif
@@ -113,6 +120,7 @@ class EspAtMqtt {
   uint16_t _batt_mv; int16_t _noise;    // observer telemetry (fed from main.cpp)
   uint32_t _tx_air, _rx_air, _recv_err;
   int8_t   _rssi_offset;                 // dB subtracted from reported RSSI (FEM/LNA gain)
+  uint8_t  _rfpower;                      // ESP-AT WiFi TX power cap (0.25dBm units)
   char     _pubkey_hex[2 * PUB_KEY_SIZE + 1];
   char     _client_id[40];
 
@@ -151,7 +159,7 @@ class EspAtMqtt {
   uint16_t _pub_fail_run;   // consecutive publish failures -> reconnect backstop
 
   // bring-up steps
-  enum { ST_ATE0, ST_CWMODE, ST_CWJAP, ST_USERCFG, ST_CONNCFG, ST_CONN, ST_PUBSTATUS, ST_DONE };
+  enum { ST_ATE0, ST_CWMODE, ST_RFPOWER, ST_CWJAP, ST_USERCFG, ST_CONNCFG, ST_CONN, ST_PUBSTATUS, ST_DONE };
 
   /* ===================== small helpers ===================== */
   static char hexNib(uint8_t n) { return n < 10 ? ('0' + n) : ('A' + n - 10); }
@@ -249,6 +257,8 @@ class EspAtMqtt {
     switch (_step) {
       case ST_ATE0:    strcpy(cmd, "ATE0"); to = 2000; break;
       case ST_CWMODE:  strcpy(cmd, "AT+CWMODE=1"); break;
+      case ST_RFPOWER: // cap WiFi TX power (0.25dBm units) to limit current spikes
+        snprintf(cmd, sizeof(cmd), "AT+RFPOWER=%u", (unsigned)_rfpower); break;
       case ST_CWJAP:
         snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", _ssid, _wifi_pass);
         to = 20000;  // association + DHCP
@@ -330,6 +340,9 @@ class EspAtMqtt {
       case ST_CWMODE:
         if (sawOK()) advanceStep();
         else if (sawError() || timeout) failBringup("CWMODE");
+        break;
+      case ST_RFPOWER:  // non-critical: continue even if the build rejects it
+        if (sawOK() || sawError() || timeout) advanceStep();
         break;
       case ST_CWJAP:
         if (seen("WIFI GOT IP")) _wifi_got_ip = true;
@@ -443,7 +456,7 @@ public:
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _freq(0), _bw(0), _sf(0), _cr(0),
       _batt_mv(0), _noise(0), _tx_air(0), _rx_air(0), _recv_err(0),
-      _rssi_offset(MQTT_RSSI_FEM_OFFSET),
+      _rssi_offset(MQTT_RSSI_FEM_OFFSET), _rfpower(MQTT_RFPOWER_DEFAULT),
       _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
       _pstate(PUB_IDLE), _pub_deadline(0), _next_status(0), _online_settle(0),
@@ -514,6 +527,8 @@ public:
     val(buf, "iata=",    _iata, sizeof(_iata));
     tmp[0] = 0;
     val(buf, "rssioff=", tmp, sizeof(tmp)); if (tmp[0]) _rssi_offset = (int8_t)atoi(tmp);
+    tmp[0] = 0;
+    val(buf, "rfpow=", tmp, sizeof(tmp)); if (tmp[0]) _rfpower = (uint8_t)atoi(tmp);
     Serial.printf("[MQTT] cfg: en=%d ssid=%s host=%s:%u scheme=%u iata=%s\n",
                   (int)_enabled, _ssid, _host, (unsigned)_port, (unsigned)_scheme,
                   _iata[0] ? _iata : "(unset)");
@@ -533,9 +548,9 @@ public:
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
       "enabled=%d\nssid=%s\nwpass=%s\nhost=%s\nport=%u\nscheme=%u\n"
-      "user=%s\nmpass=%s\nwspath=%s\nprefix=%s\niata=%s\nrssioff=%d\n",
+      "user=%s\nmpass=%s\nwspath=%s\nprefix=%s\niata=%s\nrssioff=%d\nrfpow=%u\n",
       (int)_enabled, _ssid, _wifi_pass, _host, (unsigned)_port, (unsigned)_scheme,
-      _user, _pass, _ws_path, _prefix, _iata, (int)_rssi_offset);
+      _user, _pass, _ws_path, _prefix, _iata, (int)_rssi_offset, (unsigned)_rfpower);
     int w = f.write((const uint8_t*)buf, n);
     f.close();
     if (w != n) Serial.printf("[MQTT] save FAILED: short write %d/%d\n", w, n);
@@ -666,6 +681,8 @@ public:
     if (strncmp(cmd, "mqtt prefix ", 12) == 0){ strncpy(_prefix, cmd + 12, sizeof(_prefix)-1); _prefix[sizeof(_prefix)-1]=0; save(); snprintf(reply,160,"Prefix: %s",_prefix); return true; }
     if (strncmp(cmd, "mqtt iata ", 10) == 0) { strncpy(_iata, cmd + 10, sizeof(_iata)-1); _iata[sizeof(_iata)-1]=0; for(char*p=_iata;*p;p++)*p=toupper((int)*p); save(); snprintf(reply,160,"IATA: %s",_iata); return true; }
     if (strncmp(cmd, "mqtt rssioffset ", 16) == 0){ _rssi_offset = (int8_t)atoi(cmd + 16); save(); snprintf(reply,160,"RSSI offset: %d dB (reported - offset)",(int)_rssi_offset); return true; }
+    if (strncmp(cmd, "mqtt rfpower ", 13) == 0){ int v=atoi(cmd+13); if(v<8)v=8; if(v>84)v=84; _rfpower=(uint8_t)v; save(); snprintf(reply,160,"WiFi TX power: %u (%.2f dBm) - reconnect to apply",(unsigned)_rfpower,_rfpower*0.25); return true; }
+    if (strcmp(cmd, "mqtt rfpower") == 0)        { snprintf(reply,160,"WiFi TX power: %u (%.2f dBm)",(unsigned)_rfpower,_rfpower*0.25); return true; }
     if (strcmp(cmd, "mqtt rssioffset") == 0)       { snprintf(reply,160,"RSSI offset: %d dB",(int)_rssi_offset); return true; }
     if (strcmp(cmd, "mqtt pubkey") == 0)    { snprintf(reply,160,"PubKey: %s",_pubkey_hex); return true; }
     if (strcmp(cmd, "mqtt verbose on") == 0){ _verbose = true;  strcpy(reply,"AT trace ON"); return true; }
@@ -684,7 +701,7 @@ public:
       Serial.println("wifi ssid <s> / wifi pass <p>");
       Serial.println("mqtt host <h> / port <n> / scheme <1|7|8>");
       Serial.println("mqtt user <u> / mpass <p> / path <wspath>");
-      Serial.println("mqtt prefix <p> / iata <CODE> / pubkey / rssioffset <dB>");
+      Serial.println("mqtt prefix <p> / iata <CODE> / pubkey / rssioffset <dB> / rfpower <8-84>");
       Serial.println("mqtt on / off / retry / status / test / verbose on|off");
       Serial.println("debug: mqtt cfg / mqtt at <raw AT cmd> / mqtt baud <n>  (use with mqtt off)");
       strcpy(reply, "See Serial output");
