@@ -109,7 +109,7 @@ public:
     File f = fs->open("/nws.cfg");
     if (!f) return;
 
-    char buf[128];
+    char buf[256];
     int len = f.read((uint8_t*)buf, sizeof(buf) - 1);
     f.close();
     if (len <= 0) return;
@@ -117,6 +117,18 @@ public:
 
     char* o = strstr(buf, "utc_offset=");
     if (o) _utc_offset = (int8_t)atoi(o + 11);
+
+    char* px = strstr(buf, "proxy=");
+    if (px && _nws) {
+      px += 6;
+      char host[64]; int i = 0;
+      while (*px && *px != '\n' && *px != '\r' && i < (int)sizeof(host) - 1) host[i++] = *px++;
+      host[i] = 0;
+      uint16_t port = _nws->getProxyPort();
+      char* pp = strstr(buf, "proxyport=");
+      if (pp) port = (uint16_t)atoi(pp + 10);
+      if (host[0]) { _nws->setProxy(host, port); Serial.print("[NWS] Loaded proxy: "); Serial.print(host); Serial.print(":"); Serial.println(port); }
+    }
     char* dt = strstr(buf, "display_timeout=");
     if (dt) _display_data.display_timeout_secs = (uint32_t)atol(dt + 16);
     char* sv = strstr(buf, "severity=");
@@ -177,9 +189,11 @@ protected:
 
   void saveNWSPrefs() {
     if (!_nws_fs || !_nws) return;
-    char buf[128];
-    snprintf(buf, sizeof(buf), "utc_offset=%d\ndisplay_timeout=%lu\nseverity=%d\nzones=%s\n",
-      (int)_utc_offset, (unsigned long)_display_data.display_timeout_secs, (int)_min_severity, _nws->getZone());
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+      "utc_offset=%d\ndisplay_timeout=%lu\nseverity=%d\nzones=%s\nproxy=%s\nproxyport=%u\n",
+      (int)_utc_offset, (unsigned long)_display_data.display_timeout_secs, (int)_min_severity,
+      _nws->getZone(), _nws->getProxyHost(), (unsigned)_nws->getProxyPort());
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
     _nws_fs->remove("/nws.cfg");
     File f = _nws_fs->open("/nws.cfg", FILE_O_WRITE);
@@ -382,6 +396,8 @@ protected:
       Serial.println("nws test                 - broadcast test alert to severe channel");
       Serial.println("nws zone                 - show current zones");
       Serial.println("nws zone <z1,z2,...>     - set zones (e.g. WIZ038,WIZ039)");
+      Serial.println("nws proxy                - show NWS proxy host:port");
+      Serial.println("nws proxy <host> [port]  - set proxy (hostname or IP), persisted");
       Serial.println("nws utcoffset            - show UTC offset");
       Serial.println("nws utcoffset <hours>    - set UTC offset (e.g. -5 for CDT, -6 for CST)");
       Serial.println("nws severity             - show min broadcast severity");
@@ -465,6 +481,26 @@ protected:
       const char* new_zone = command + 9;
       if (_nws) { _nws->setZone(new_zone); saveNWSPrefs(); }
       snprintf(reply, 160, "Zone set: %s", new_zone);
+      return true;
+    }
+
+    // nws proxy              → show host:port
+    // nws proxy <host> [port] → set proxy host (hostname or IP) and optional port, persist
+    if (strcmp(command, "nws proxy") == 0) {
+      snprintf(reply, 160, "Proxy: %s:%u", _nws ? _nws->getProxyHost() : NWS_PROXY_HOST,
+               _nws ? _nws->getProxyPort() : NWS_PROXY_PORT);
+      return true;
+    }
+    if (strncmp(command, "nws proxy ", 10) == 0 && _nws) {
+      char host[64]; const char* a = command + 10;
+      int i = 0; while (*a && *a != ' ' && i < (int)sizeof(host) - 1) host[i++] = *a++;
+      host[i] = 0;
+      uint16_t port = _nws->getProxyPort();          // keep current port unless one is given
+      while (*a == ' ') a++;
+      if (*a) port = (uint16_t)atoi(a);
+      _nws->setProxy(host, port);
+      saveNWSPrefs();
+      snprintf(reply, 160, "Proxy set: %s:%u (applies next poll)", _nws->getProxyHost(), _nws->getProxyPort());
       return true;
     }
 
