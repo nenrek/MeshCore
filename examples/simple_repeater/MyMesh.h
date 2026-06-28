@@ -90,6 +90,10 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   // overflow the 4KB loop task.
   bool _advert_pending, _advert_flood;
   int  _advert_delay;
+  // Optional app command hook: tried before the built-in CLI in handleCommand(),
+  // so app-specific commands (e.g. mqtt_repeater wifi/mqtt) also work over the
+  // remote admin interface. Returns true if it handled the command.
+  bool (*_cmd_hook)(const char* cmd, char* reply) = nullptr;
   bool _logging;
   NodePrefs _prefs;
   ClientACL  acl;
@@ -132,6 +136,11 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
   mesh::Packet* createSelfAdvert();
   void serviceAdvert();   // drains a deferred self-advert at the shallow loop() stack
+public:
+  // Register an app command hook (handled before the built-in CLI, both serial and
+  // remote admin). Used by mqtt_repeater to expose wifi/mqtt commands over the mesh.
+  void setCommandHook(bool (*fn)(const char* cmd, char* reply)) { _cmd_hook = fn; }
+private:
 
   File openAppend(const char* fname);
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
