@@ -19,6 +19,12 @@ EspAtMqtt      mqtt;
 
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
 
+// Command hook so the wifi/mqtt CLI also works over the remote admin interface
+// (not just USB serial). Registered with the mesh in setup().
+static bool mqttCmdHook(const char* cmd, char* reply) {
+  return mqtt.handleCommand(cmd, reply);
+}
+
 void halt() {
   while (1) ;
 }
@@ -110,6 +116,7 @@ void setup() {
   mqtt.load(fs);
 
   tables.setBridge(&mqtt);
+  the_mesh.setCommandHook(mqttCmdHook);   // expose wifi/mqtt CLI over remote admin too
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);

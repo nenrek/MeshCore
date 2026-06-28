@@ -1187,6 +1187,13 @@ void MyMesh::clearStats() {
 }
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
+  // App-supplied command hook (e.g. the mqtt_repeater's wifi/mqtt commands). Lets
+  // those be issued over the remote admin interface too, not just USB serial.
+  // Skipped while a multi-line region 'load' is in progress.
+  if (_cmd_hook && !region_load_active) {
+    reply[0] = 0;
+    if (_cmd_hook(command, reply)) return;
+  }
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
       region_map = temp_map;  // copy over the temp instance as new current map
