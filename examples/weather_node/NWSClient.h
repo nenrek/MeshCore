@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RAK13800_W5100S.h>
+#include <Dns.h>
 #include <ArduinoJson.h>
 
 // Manually instantiate SPI1 for SPIM2 peripheral
@@ -10,8 +11,10 @@
   SPIClass SPI1(NRF_SPIM2, PIN_SPI1_MISO, PIN_SPI1_SCK, PIN_SPI1_MOSI);
 #endif
 
-#ifndef NWS_PROXY_IP
-  #define NWS_PROXY_IP "192.168.8.68"
+// Default proxy host (hostname or literal IP — resolved via DNS at connect time
+// if it's not a literal IP). Override at runtime with `nws proxy <host> [port]`.
+#ifndef NWS_PROXY_HOST
+  #define NWS_PROXY_HOST "nws.lc.midwest.systems"
 #endif
 
 #ifndef NWS_PROXY_PORT
@@ -62,6 +65,8 @@ class NWSClient {
   int _num_sent;
   char _zone[64];
   uint8_t _min_severity;  // NWSSeverityLevel — alerts below this are not counted as new
+  char _proxy_host[64];   // NWS proxy hostname or IP (resolved via DNS if a hostname)
+  uint16_t _proxy_port;
 
   static uint8_t severityToLevel(const char* sev) {
     if (strcasecmp(sev, "Extreme") == 0)  return NWS_SEV_EXTREME;
@@ -144,10 +149,29 @@ public:
     memset(_sent_hashes, 0, sizeof(_sent_hashes));
     strncpy(_zone, NWS_ZONE, sizeof(_zone) - 1);
     _zone[sizeof(_zone) - 1] = 0;
+    strncpy(_proxy_host, NWS_PROXY_HOST, sizeof(_proxy_host) - 1);
+    _proxy_host[sizeof(_proxy_host) - 1] = 0;
+    _proxy_port = NWS_PROXY_PORT;
   }
 
   void setMinSeverity(uint8_t level) { _min_severity = level; }
   uint8_t getMinSeverity() const { return _min_severity; }
+
+  void setProxy(const char* host, uint16_t port) {
+    if (host && host[0]) { strncpy(_proxy_host, host, sizeof(_proxy_host) - 1); _proxy_host[sizeof(_proxy_host) - 1] = 0; }
+    if (port) _proxy_port = port;
+  }
+  const char* getProxyHost() const { return _proxy_host; }
+  uint16_t getProxyPort() const { return _proxy_port; }
+
+  // Resolve the proxy host to an IP: accept a literal IP directly, else DNS-resolve
+  // the hostname using the network's DNS server.
+  bool resolveProxy(IPAddress& ip) {
+    if (ip.fromString(_proxy_host)) return true;   // it was a literal IP
+    DNSClient dns;
+    dns.begin(Ethernet.dnsServerIP());
+    return dns.getHostByName(_proxy_host, ip) == 1;
+  }
 
   void setZone(const char* zone) {
     strncpy(_zone, zone, sizeof(_zone) - 1);
@@ -201,13 +225,14 @@ public:
   }
 
   void runPathTrace() {
-    IPAddress proxy; proxy.fromString(NWS_PROXY_IP);
-    Serial.print("[DIAG] Path Trace to "); Serial.print(proxy); Serial.println(":");
+    IPAddress proxy;
+    if (!resolveProxy(proxy)) { Serial.print("[DIAG] cannot resolve "); Serial.println(_proxy_host); return; }
+    Serial.print("[DIAG] Path Trace to "); Serial.print(_proxy_host); Serial.print(" ("); Serial.print(proxy); Serial.println("):");
     EthernetClient trace;
     trace.setConnectionTimeout(1500);
     Serial.print("  - SSH (22): "); Serial.println(trace.connect(proxy, 22) ? "OPEN" : "TIMEOUT"); trace.stop();
     Serial.print("  - HTTP (80): "); Serial.println(trace.connect(proxy, 80) ? "OPEN" : "TIMEOUT"); trace.stop();
-    Serial.print("  - PROXY (8085): "); Serial.println(trace.connect(proxy, NWS_PROXY_PORT) ? "OPEN" : "TIMEOUT"); trace.stop();
+    Serial.print("  - PROXY: "); Serial.println(trace.connect(proxy, _proxy_port) ? "OPEN" : "TIMEOUT"); trace.stop();
 
     if (!testGateway()) {
       Serial.println("[ETH] Gateway lost after path trace — W5100S socket exhaustion, recovering...");
@@ -237,11 +262,16 @@ public:
   int pollAlerts() {
     if (!_eth_ready) return 0;
     _num_alerts = 0;
-    IPAddress proxy; proxy.fromString(NWS_PROXY_IP);
+    IPAddress proxy;
+    if (!resolveProxy(proxy)) {
+      Serial.print("[NWS] DNS resolve FAILED for proxy host: "); Serial.println(_proxy_host);
+      return 0;
+    }
 
-    Serial.print("[NWS] Connecting to proxy...");
+    Serial.print("[NWS] Connecting to proxy "); Serial.print(_proxy_host);
+    Serial.print(" ("); Serial.print(proxy); Serial.print(":"); Serial.print(_proxy_port); Serial.print(")...");
     _client.setConnectionTimeout(5000);
-    int result = _client.connect(proxy, NWS_PROXY_PORT);
+    int result = _client.connect(proxy, _proxy_port);
 
     if (result != 1) {
       Serial.print(" FAIL (Code:"); Serial.print(result);
@@ -253,7 +283,7 @@ public:
       Serial.println("[ETH] First connect failed, attempting recovery before diagnostics...");
       if (recover()) {
         Serial.print("[NWS] Retrying proxy connection...");
-        result = _client.connect(proxy, NWS_PROXY_PORT);
+        result = _client.connect(proxy, _proxy_port);
         if (result != 1) {
           Serial.print(" FAIL (Code:"); Serial.print(result);
           Serial.print(", Status:"); Serial.print(_client.status()); Serial.println(")");
@@ -270,7 +300,7 @@ public:
 
     Serial.println(" SUCCESS. Requesting alerts...");
     _client.print("GET /alerts/active?zone="); _client.print(_zone); _client.println(" HTTP/1.1");
-    _client.print("Host: "); _client.println(NWS_PROXY_IP);
+    _client.print("Host: "); _client.println(_proxy_host);
     _client.println("Connection: close");
     _client.println();
 
