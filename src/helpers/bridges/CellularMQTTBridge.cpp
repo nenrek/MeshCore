@@ -109,6 +109,7 @@ void CellularMQTTBridge::begin() {
   _modem.setAPN(_prefs->cellular_apn[0] ? _prefs->cellular_apn : "hologram");
   if (_prefs->cellular_band[0]) _modem.setBand(_prefs->cellular_band);
   _modem.setTLS(_prefs->cellular_tls != 0, _prefs->cellular_tls_verify != 0);
+  _modem.setKeepAlive(_prefs->cellular_keepalive ? _prefs->cellular_keepalive : 60);
   _modem.setTimeSyncCallback(&CellularMQTTBridge::onModemTime, this);
 #ifdef CELLULAR_AT_DEBUG
   _modem.setDebugStream(&Serial);   // echo AT traffic to USB during bring-up

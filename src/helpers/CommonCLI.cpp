@@ -360,6 +360,9 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     if (file.available() >= (int)sizeof(_prefs->cellular_gps_enabled)) {
       file.read((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
     }
+    if (file.available() >= (int)sizeof(_prefs->cellular_keepalive)) {
+      file.read((uint8_t *)&_prefs->cellular_keepalive, sizeof(_prefs->cellular_keepalive));
+    }
     _prefs->cellular_host[sizeof(_prefs->cellular_host) - 1] = '\0';
     _prefs->cellular_user[sizeof(_prefs->cellular_user) - 1] = '\0';
     _prefs->cellular_pass[sizeof(_prefs->cellular_pass) - 1] = '\0';
@@ -524,6 +527,7 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->cellular_tx_enabled, sizeof(_prefs->cellular_tx_enabled));
     file.write((uint8_t *)&_prefs->cellular_status_interval, sizeof(_prefs->cellular_status_interval));
     file.write((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
+    file.write((uint8_t *)&_prefs->cellular_keepalive, sizeof(_prefs->cellular_keepalive));
 #endif
 
     file.close();
@@ -1835,6 +1839,15 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "cell.gps ", 9) == 0) {
     _prefs->cellular_gps_enabled = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
     savePrefs(); strcpy(reply, "OK");   // read live by the bridge loop; no restart needed
+  } else if (memcmp(config, "cell.keepalive ", 15) == 0) {
+    uint32_t s = _atoi(&config[15]);
+    if (s >= 10 && s <= 3600) {
+      _prefs->cellular_keepalive = (uint16_t)s;
+      savePrefs(); _callbacks->restartBridge();   // re-applied to the modem on reconnect
+      sprintf(reply, "OK - keepalive %lus", (unsigned long)s);
+    } else {
+      strcpy(reply, "Error: keepalive must be 10-3600 seconds");
+    }
   } else if (memcmp(config, "cell.interval ", 14) == 0) {
     uint32_t m = _atoi(&config[14]);
     if (m >= 1 && m <= 60) {
@@ -2153,7 +2166,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
 #endif
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
   } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
-    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s pkts=%s rx=%s tx=%d int=%lum gps=%s",
+    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s pkts=%s rx=%s tx=%d int=%lum ka=%us gps=%s",
              _prefs->cellular_host, (unsigned)_prefs->cellular_port,
              _prefs->cellular_tls ? "on" : "off",
              _prefs->cellular_tls_verify ? "verify" : "noverify",
@@ -2162,6 +2175,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
              _prefs->cellular_rx_enabled ? "on" : "off",
              (int)_prefs->cellular_tx_enabled,
              (unsigned long)(_prefs->cellular_status_interval / 60000),
+             (unsigned)(_prefs->cellular_keepalive ? _prefs->cellular_keepalive : 60),
              _prefs->cellular_gps_enabled ? "on" : "off");
 #endif
 #ifdef WITH_MQTT_BRIDGE
