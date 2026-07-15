@@ -143,8 +143,11 @@ void CellularMQTTBridge::loop() {
     drainOne();   // one modem exchange per loop iteration
   }
 
-  // GNSS self-location runs once the modem is up (independent of broker connection).
-  if (_prefs->cellular_gps_enabled && _modem.isUp()) handleGnss();
+  // GNSS self-location runs once the modem is up (independent of broker connection), but
+  // never while a non-blocking bring-up command is in flight — the blocking QGPS/QGPSLOC
+  // exchange would flush and clobber that pending response (e.g. the 45s QMTOPEN), breaking
+  // the LTE connect. isBusy() gate confines GNSS to the idle gaps between atTick commands.
+  if (_prefs->cellular_gps_enabled && _modem.isUp() && !_modem.isBusy()) handleGnss();
 }
 
 void CellularMQTTBridge::handleGnss() {

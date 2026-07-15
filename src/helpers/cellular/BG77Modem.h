@@ -68,6 +68,9 @@ public:
    *  run GNSS even if it hasn't registered/connected to the broker yet. */
   bool isUp() const { return _state >= ST_NET_WAIT; }
   bool isRegistered() const { return _registered; }
+  /** True while a non-blocking atTick() command is in flight. GNSS (blocking AT) must not
+   *  inject while this is set, or it clobbers the pending bring-up response. */
+  bool isBusy() const { return _at_active; }
   int  lastRssiDbm() const { return _rssi_dbm; }   // from CSQ (-113..-51), 0 = unknown
   int  ceregStat() const { return _cereg_stat; }   // last +CEREG stat (0/2 search,1/5 reg)
   const char* stateName() const;                   // short name of the current state

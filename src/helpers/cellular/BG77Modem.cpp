@@ -467,44 +467,27 @@ static int parseQmtpubResult(const char* line) {
 
 bool BG77Modem::publish(const char* topic, const char* payload, size_t len, uint8_t qos, bool retain) {
   if (_state != ST_READY || !topic || !payload) { snprintf(_last_pub, sizeof(_last_pub), "notready"); return false; }
+  if (len == 0 || len > 4096) { snprintf(_last_pub, sizeof(_last_pub), "len:%u", (unsigned)len); return false; }
 
   char cmd[192];
   uint16_t mid = (qos == 0) ? 0 : _msg_id++;
 
-  // Attempt 1: AT+QMTPUBEX=<idx>,<msgid>,<qos>,<retain>,"<topic>",<length> (length-delimited,
-  // up to 4096 B). Some BG77 firmware revisions reject QMTPUBEX -> we fall back to QMTPUB below.
-  snprintf(cmd, sizeof(cmd), "AT+QMTPUBEX=%u,%u,%u,%u,\"%s\",%u",
+  // AT+QMTPUB=<idx>,<msgid>,<qos>,<retain>,"<topic>",<length> — the length-delimited form.
+  // On this BG77 firmware QMTPUB carries the length + '>' data prompt (payload up to 4096 B),
+  // while QMTPUBEX is the inline-message form (unusable for JSON, which contains quotes). So we
+  // use QMTPUB with an explicit length and stream exactly <length> bytes (no CTRL-Z needed).
+  snprintf(cmd, sizeof(cmd), "AT+QMTPUB=%u,%u,%u,%u,\"%s\",%u",
            MQTT_CLIENT_IDX, mid, qos, retain ? 1 : 0, topic, (unsigned)len);
   flushInput();
   sendAT(cmd);
-  if (waitForPrompt(T_AT)) {                       // got the '>' data prompt
-    _ser.write((const uint8_t*)payload, len);
-    if (!waitFor("+QMTPUB:", T_PUB)) { snprintf(_last_pub, sizeof(_last_pub), "ex:noack"); return false; }
-    int rc = parseQmtpubResult(_line);
-    if (rc == 0) { snprintf(_last_pub, sizeof(_last_pub), "ex:ok"); return true; }
-    snprintf(_last_pub, sizeof(_last_pub), "ex:rc%d", rc);
-    return false;
-  }
+  if (!waitForPrompt(T_AT)) { snprintf(_last_pub, sizeof(_last_pub), "noprompt"); return false; }
+  _ser.write((const uint8_t*)payload, len);
 
-  // Attempt 2 (fallback): AT+QMTPUB (CTRL-Z-delimited, <=560 B). If QMTPUBEX gave no prompt,
-  // the older QMTPUB may still be accepted.
-  if (len <= 560) {
-    mid = (qos == 0) ? 0 : _msg_id++;
-    snprintf(cmd, sizeof(cmd), "AT+QMTPUB=%u,%u,%u,%u,\"%s\"",
-             MQTT_CLIENT_IDX, mid, qos, retain ? 1 : 0, topic);
-    flushInput();
-    sendAT(cmd);
-    if (!waitForPrompt(T_AT)) { snprintf(_last_pub, sizeof(_last_pub), "noprompt"); return false; }
-    _ser.write((const uint8_t*)payload, len);
-    _ser.write((uint8_t)0x1A);                     // CTRL-Z terminates QMTPUB data
-    if (!waitFor("+QMTPUB:", T_PUB)) { snprintf(_last_pub, sizeof(_last_pub), "pub:noack"); return false; }
-    int rc = parseQmtpubResult(_line);
-    if (rc == 0) { snprintf(_last_pub, sizeof(_last_pub), "pub:ok"); return true; }
-    snprintf(_last_pub, sizeof(_last_pub), "pub:rc%d", rc);
-    return false;
-  }
-
-  snprintf(_last_pub, sizeof(_last_pub), "noprompt-big");
+  // Result: +QMTPUB: <idx>,<msgid>,<result>[,<value>]  (result 0 = sent).
+  if (!waitFor("+QMTPUB:", T_PUB)) { snprintf(_last_pub, sizeof(_last_pub), "noack"); return false; }
+  int rc = parseQmtpubResult(_line);
+  if (rc == 0) { snprintf(_last_pub, sizeof(_last_pub), "ok"); return true; }
+  snprintf(_last_pub, sizeof(_last_pub), "rc%d", rc);
   return false;
 }
 
