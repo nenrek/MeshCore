@@ -7,7 +7,7 @@
 #include <helpers/MQTTPresets.h>  // For MAX_MQTT_SLOTS (used in NodePrefs struct layout)
 #include <helpers/RegionMap.h>
 
-#if defined(WITH_RS232_BRIDGE) || defined(WITH_ESPNOW_BRIDGE) || defined(WITH_MQTT_BRIDGE)
+#if defined(WITH_RS232_BRIDGE) || defined(WITH_ESPNOW_BRIDGE) || defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
 #define WITH_BRIDGE
 #endif
 
@@ -128,6 +128,27 @@ struct NodePrefs { // persisted to file
 
   // Custom NTP server (MQTT observer); empty = built-in default primary (pool.ntp.org)
   char mqtt_ntp_server[64];
+
+  // Cellular (LTE-M / BG77 / RAK5860) settings — used by CellularMQTTBridge. Appended at
+  // the end for binary-compatible upgrades. Self-contained: the mqtt_* fields live in a
+  // separate /mqtt_prefs file loaded only under WITH_MQTT_BRIDGE, so a cellular-only build
+  // persists everything it needs here in the main /com_prefs file.
+  char     cellular_host[64];        // broker hostname (bare, no scheme)
+  uint16_t cellular_port;            // broker port (default 8883 for mqtts)
+  char     cellular_user[32];        // MQTT username (empty = anonymous)
+  char     cellular_pass[64];        // MQTT password
+  char     cellular_iata[8];         // IATA topic segment (e.g. "ATW")
+  char     cellular_origin[32];      // display name for MQTT JSON (empty = node_name)
+  char     cellular_apn[40];         // APN (default "hologram")
+  char     cellular_band[24];        // LTE-M band mask hint (Quectel hex); empty = modem default
+  uint8_t  cellular_tls;             // 1 = MQTT over TLS (mqtts), 0 = plaintext (default 1)
+  uint8_t  cellular_tls_verify;      // 1 = verify broker cert against uploaded CA (default 1)
+  uint8_t  cellular_pkts_enabled;    // publish RX packets (default 1)
+  uint8_t  cellular_rx_enabled;      // RX uplink gate (default 1)
+  uint8_t  cellular_status_enabled;  // publish /status (default 1)
+  uint8_t  cellular_tx_enabled;      // TX uplink: 0=off, 1=all, 2=advert-only (default 0)
+  uint32_t cellular_status_interval; // /status publish interval in ms (default 300000)
+  uint8_t  cellular_gps_enabled;     // BG77 GNSS self-location -> advert lat/lon (default 0)
 };
 
 #ifdef WITH_MQTT_BRIDGE

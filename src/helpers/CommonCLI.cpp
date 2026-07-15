@@ -337,6 +337,37 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     if (file.available() >= (int)sizeof(_prefs->alert_region)) {
       file.read((uint8_t *)&_prefs->alert_region, sizeof(_prefs->alert_region));
     }
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+    // Cellular fields (appended tail; older files won't have them — ctor defaults remain).
+    if (file.available() >= (int)sizeof(_prefs->cellular_host)) {
+      file.read((uint8_t *)&_prefs->cellular_host, sizeof(_prefs->cellular_host));
+      file.read((uint8_t *)&_prefs->cellular_port, sizeof(_prefs->cellular_port));
+      file.read((uint8_t *)&_prefs->cellular_user, sizeof(_prefs->cellular_user));
+      file.read((uint8_t *)&_prefs->cellular_pass, sizeof(_prefs->cellular_pass));
+      file.read((uint8_t *)&_prefs->cellular_iata, sizeof(_prefs->cellular_iata));
+      file.read((uint8_t *)&_prefs->cellular_origin, sizeof(_prefs->cellular_origin));
+      file.read((uint8_t *)&_prefs->cellular_apn, sizeof(_prefs->cellular_apn));
+      file.read((uint8_t *)&_prefs->cellular_band, sizeof(_prefs->cellular_band));
+      file.read((uint8_t *)&_prefs->cellular_tls, sizeof(_prefs->cellular_tls));
+      file.read((uint8_t *)&_prefs->cellular_tls_verify, sizeof(_prefs->cellular_tls_verify));
+      file.read((uint8_t *)&_prefs->cellular_pkts_enabled, sizeof(_prefs->cellular_pkts_enabled));
+      file.read((uint8_t *)&_prefs->cellular_rx_enabled, sizeof(_prefs->cellular_rx_enabled));
+      file.read((uint8_t *)&_prefs->cellular_status_enabled, sizeof(_prefs->cellular_status_enabled));
+      file.read((uint8_t *)&_prefs->cellular_tx_enabled, sizeof(_prefs->cellular_tx_enabled));
+      file.read((uint8_t *)&_prefs->cellular_status_interval, sizeof(_prefs->cellular_status_interval));
+    }
+    // Appended after the original cellular block — guarded for forward-compat.
+    if (file.available() >= (int)sizeof(_prefs->cellular_gps_enabled)) {
+      file.read((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
+    }
+    _prefs->cellular_host[sizeof(_prefs->cellular_host) - 1] = '\0';
+    _prefs->cellular_user[sizeof(_prefs->cellular_user) - 1] = '\0';
+    _prefs->cellular_pass[sizeof(_prefs->cellular_pass) - 1] = '\0';
+    _prefs->cellular_iata[sizeof(_prefs->cellular_iata) - 1] = '\0';
+    _prefs->cellular_origin[sizeof(_prefs->cellular_origin) - 1] = '\0';
+    _prefs->cellular_apn[sizeof(_prefs->cellular_apn) - 1] = '\0';
+    _prefs->cellular_band[sizeof(_prefs->cellular_band) - 1] = '\0';
+#endif
     // ensure null termination after raw read
     _prefs->snmp_community[sizeof(_prefs->snmp_community) - 1] = '\0';
     _prefs->alert_psk_hex[sizeof(_prefs->alert_psk_hex) - 1] = '\0';
@@ -474,6 +505,26 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->alert_min_interval_min, sizeof(_prefs->alert_min_interval_min));
     file.write((uint8_t *)&_prefs->alert_hashtag, sizeof(_prefs->alert_hashtag));
     file.write((uint8_t *)&_prefs->alert_region, sizeof(_prefs->alert_region));
+
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+    // Cellular (LTE-M / BG77) fields — appended tail (self-contained; not in /mqtt_prefs).
+    file.write((uint8_t *)&_prefs->cellular_host, sizeof(_prefs->cellular_host));
+    file.write((uint8_t *)&_prefs->cellular_port, sizeof(_prefs->cellular_port));
+    file.write((uint8_t *)&_prefs->cellular_user, sizeof(_prefs->cellular_user));
+    file.write((uint8_t *)&_prefs->cellular_pass, sizeof(_prefs->cellular_pass));
+    file.write((uint8_t *)&_prefs->cellular_iata, sizeof(_prefs->cellular_iata));
+    file.write((uint8_t *)&_prefs->cellular_origin, sizeof(_prefs->cellular_origin));
+    file.write((uint8_t *)&_prefs->cellular_apn, sizeof(_prefs->cellular_apn));
+    file.write((uint8_t *)&_prefs->cellular_band, sizeof(_prefs->cellular_band));
+    file.write((uint8_t *)&_prefs->cellular_tls, sizeof(_prefs->cellular_tls));
+    file.write((uint8_t *)&_prefs->cellular_tls_verify, sizeof(_prefs->cellular_tls_verify));
+    file.write((uint8_t *)&_prefs->cellular_pkts_enabled, sizeof(_prefs->cellular_pkts_enabled));
+    file.write((uint8_t *)&_prefs->cellular_rx_enabled, sizeof(_prefs->cellular_rx_enabled));
+    file.write((uint8_t *)&_prefs->cellular_status_enabled, sizeof(_prefs->cellular_status_enabled));
+    file.write((uint8_t *)&_prefs->cellular_tx_enabled, sizeof(_prefs->cellular_tx_enabled));
+    file.write((uint8_t *)&_prefs->cellular_status_interval, sizeof(_prefs->cellular_status_interval));
+    file.write((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
+#endif
 
     file.close();
   }
@@ -763,6 +814,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
         strcpy(reply, "ERR: clock cannot go backwards");
       }
     } else if (memcmp(command, "memory", 6) == 0) {
+#if defined(ESP_PLATFORM)
+  #if defined(BOARD_HAS_PSRAM)
       sprintf(reply, "Free: %d, Min: %d, Max: %d, Queue: %d, IntFree: %d, IntMax: %d, PSRAM: %d/%d",
               ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
               _callbacks->getQueueSize(),
@@ -770,6 +823,17 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
               (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
               (int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
               (int)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+  #else
+      sprintf(reply, "Free: %d, Min: %d, Max: %d, Queue: %d, IntFree: %d, IntMax: %d, PSRAM: 0/0",
+              ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
+              _callbacks->getQueueSize(),
+              (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+              (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  #endif
+#else
+      // Non-ESP (nRF52 etc.): ESP/heap_caps are not available. Report the queue only.
+      sprintf(reply, "Queue: %d (detailed heap stats are ESP-only)", _callbacks->getQueueSize());
+#endif
     } else if (memcmp(command, "tls.bundletest ", 15) == 0) {
 #ifdef ESP_PLATFORM
       if (WiFi.status() != WL_CONNECTED) {
@@ -1722,6 +1786,65 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     savePrefs();
     strcpy(reply, "OK");
 #endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (memcmp(config, "cell.server ", 12) == 0) {
+    StrHelper::strncpy(_prefs->cellular_host, &config[12], sizeof(_prefs->cellular_host));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.port ", 10) == 0) {
+    _prefs->cellular_port = (uint16_t)_atoi(&config[10]);
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.user ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_user, &config[10], sizeof(_prefs->cellular_user));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.pass ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_pass, &config[10], sizeof(_prefs->cellular_pass));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.iata ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_iata, &config[10], sizeof(_prefs->cellular_iata));
+    for (int i = 0; _prefs->cellular_iata[i]; i++) _prefs->cellular_iata[i] = toupper(_prefs->cellular_iata[i]);
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.origin ", 12) == 0) {
+    StrHelper::strncpy(_prefs->cellular_origin, &config[12], sizeof(_prefs->cellular_origin));
+    StrHelper::stripSurroundingQuotes(_prefs->cellular_origin, sizeof(_prefs->cellular_origin));
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.apn ", 9) == 0) {
+    StrHelper::strncpy(_prefs->cellular_apn, &config[9], sizeof(_prefs->cellular_apn));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.band ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_band, &config[10], sizeof(_prefs->cellular_band));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tls.verify ", 16) == 0) {
+    _prefs->cellular_tls_verify = memcmp(&config[16], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tls ", 9) == 0) {
+    _prefs->cellular_tls = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.packets ", 13) == 0) {
+    _prefs->cellular_pkts_enabled = memcmp(&config[13], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.rx ", 8) == 0) {
+    _prefs->cellular_rx_enabled = memcmp(&config[8], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.status ", 12) == 0) {
+    _prefs->cellular_status_enabled = memcmp(&config[12], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tx ", 8) == 0) {
+    if (memcmp(&config[8], "advert", 6) == 0) _prefs->cellular_tx_enabled = 2;
+    else _prefs->cellular_tx_enabled = memcmp(&config[8], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.gps ", 9) == 0) {
+    _prefs->cellular_gps_enabled = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");   // read live by the bridge loop; no restart needed
+  } else if (memcmp(config, "cell.interval ", 14) == 0) {
+    uint32_t m = _atoi(&config[14]);
+    if (m >= 1 && m <= 60) {
+      _prefs->cellular_status_interval = m * 60000;
+      savePrefs(); _callbacks->restartBridge();
+      sprintf(reply, "OK - status interval %lu min", (unsigned long)m);
+    } else {
+      strcpy(reply, "Error: interval must be 1-60 minutes");
+    }
+#endif
   } else if (memcmp(config, "alert ", 6) == 0) {
     // set alert on|off
     const char* val = &config[6];
@@ -2027,6 +2150,19 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d", (uint32_t)_prefs->bridge_channel);
   } else if (memcmp(config, "bridge.secret", 13) == 0) {
     sprintf(reply, "> %s", _prefs->bridge_secret);
+#endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
+    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s pkts=%s rx=%s tx=%d int=%lum gps=%s",
+             _prefs->cellular_host, (unsigned)_prefs->cellular_port,
+             _prefs->cellular_tls ? "on" : "off",
+             _prefs->cellular_tls_verify ? "verify" : "noverify",
+             _prefs->cellular_apn, _prefs->cellular_iata,
+             _prefs->cellular_pkts_enabled ? "on" : "off",
+             _prefs->cellular_rx_enabled ? "on" : "off",
+             (int)_prefs->cellular_tx_enabled,
+             (unsigned long)(_prefs->cellular_status_interval / 60000),
+             _prefs->cellular_gps_enabled ? "on" : "off");
 #endif
 #ifdef WITH_MQTT_BRIDGE
   } else if (memcmp(config, "mqtt.origin", 11) == 0) {

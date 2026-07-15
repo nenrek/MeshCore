@@ -967,6 +967,26 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.alert_mqtt_minutes = 240;    // 4 hours
   _prefs.alert_min_interval_min = 60; // re-arm window: 1 hour
 
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  // Cellular (LTE-M / BG77 / RAK5860) defaults. Persisted in the main /com_prefs tail.
+  _prefs.cellular_host[0] = '\0';
+  _prefs.cellular_port = 8883;             // mqtts
+  _prefs.cellular_user[0] = '\0';
+  _prefs.cellular_pass[0] = '\0';
+  _prefs.cellular_iata[0] = '\0';
+  _prefs.cellular_origin[0] = '\0';
+  StrHelper::strncpy(_prefs.cellular_apn, "hologram", sizeof(_prefs.cellular_apn));
+  _prefs.cellular_band[0] = '\0';
+  _prefs.cellular_tls = 1;                 // TLS from the start
+  _prefs.cellular_tls_verify = 1;
+  _prefs.cellular_pkts_enabled = 1;
+  _prefs.cellular_rx_enabled = 1;
+  _prefs.cellular_status_enabled = 1;
+  _prefs.cellular_tx_enabled = 0;
+  _prefs.cellular_status_interval = 300000; // 5 minutes
+  _prefs.cellular_gps_enabled = 0;          // GNSS self-location off until enabled
+#endif
+
   // bridge defaults
   _prefs.bridge_enabled = 1;    // enabled
   _prefs.bridge_delay   = 500;  // milliseconds
@@ -1043,6 +1063,8 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #ifdef WITH_MQTT_BRIDGE
     // Defer construction to avoid static init crashes on ESP32 classic
     bridge = new MQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
+#elif defined(WITH_CELLULAR_MQTT_BRIDGE)
+    bridge = new CellularMQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
 #endif
     if (bridge) {
       // Set device public key for MQTT topics
@@ -1061,16 +1083,16 @@ void MyMesh::begin(FILESYSTEM *fs) {
       // Set build date
       bridge->setBuildDate(getBuildDate());
 
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
       // Set stats sources for automatic stats collection
       bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
-#ifdef WITH_SNMP
+#endif
+#if defined(WITH_MQTT_BRIDGE) && defined(WITH_SNMP)
       if (_prefs.snmp_enabled) {
         _snmp_agent.setNodeName(_prefs.node_name);
         _snmp_agent.setFirmwareVersion(getFirmwareVer());
         bridge->setSNMPAgent(&_snmp_agent);
       }
-#endif
 #endif
 
       bridge->begin();
@@ -1405,6 +1427,33 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       sendNodeDiscoverReq();
       strcpy(reply, "OK - Discover sent");
     }
+#ifdef WITH_MQTT_BRIDGE
+  } else if (strcmp(command, "net shed") == 0) {
+    // Low-battery load-shed: the nRF52 tells us to drop WiFi/MQTT (it owns the
+    // battery ADC). Keeps the observer's draw off the rail so the node repeats longer.
+    if (bridge) { bridge->setLoadShed(true); strcpy(reply, "OK - load-shed ON (WiFi down)"); }
+    else strcpy(reply, "Err - no bridge");
+  } else if (strcmp(command, "net resume") == 0) {
+    if (bridge) { bridge->setLoadShed(false); strcpy(reply, "OK - load-shed OFF (WiFi resuming)"); }
+    else strcpy(reply, "Err - no bridge");
+  } else if (strcmp(command, "net status") == 0) {
+    if (bridge) snprintf(reply, 160, "load-shed: %s", bridge->isLoadShed() ? "ON (WiFi down)" : "OFF");
+    else strcpy(reply, "Err - no bridge");
+#endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (sender_timestamp == 0 && memcmp(command, "at ", 3) == 0) {
+    // Raw AT passthrough to the BG77 modem (bring-up/debug; local USB console only).
+    if (bridge) {
+      bridge->modem().sendRawAT(&command[3], reply, 160, 6000);
+      if (reply[0] == 0) strcpy(reply, "(no response)");
+    } else {
+      strcpy(reply, "Err - no modem");
+    }
+  } else if (strcmp(command, "cell.status") == 0) {
+    // Compact live cellular status — mesh-reachable (for remote bring-up via a companion).
+    if (bridge) bridge->formatStatus(reply, 160);
+    else strcpy(reply, "Err - no modem");
+#endif
   } else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
@@ -1417,6 +1466,11 @@ void MyMesh::loop() {
 
 #ifdef WITH_BRIDGE
   // bridge.loop() is now handled by FreeRTOS task on Core 0 - no need to call it here
+#endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  // The cellular bridge runs on the nRF52 (no FreeRTOS task, unlike the ESP32 MQTTBridge),
+  // so its modem/attach/publish state machine must be driven from the main loop.
+  if (bridge) bridge->loop();
 #endif
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {

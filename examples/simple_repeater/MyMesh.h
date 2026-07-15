@@ -29,6 +29,11 @@
 #define WITH_BRIDGE
 #endif
 
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+#include "helpers/bridges/CellularMQTTBridge.h"
+#define WITH_BRIDGE
+#endif
+
 #ifdef WITH_SNMP
 #include "helpers/SNMPAgent.h"
 #endif
@@ -128,6 +133,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   ESPNowBridge bridge;
 #elif defined(WITH_MQTT_BRIDGE)
   MQTTBridge* bridge;
+#elif defined(WITH_CELLULAR_MQTT_BRIDGE)
+  CellularMQTTBridge* bridge;
 #endif
 #ifdef WITH_SNMP
   MeshSNMPAgent _snmp_agent;
@@ -254,6 +261,8 @@ public:
     if (!bridge) {
 #ifdef WITH_MQTT_BRIDGE
       bridge = new MQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
+#elif defined(WITH_CELLULAR_MQTT_BRIDGE)
+      bridge = new CellularMQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
 #endif
       if (!bridge) return;
     }
@@ -268,7 +277,7 @@ public:
       bridge->setFirmwareVersion(getFirmwareVer());
       bridge->setBoardModel(_cli.getBoard()->getManufacturerName());
       bridge->setBuildDate(getBuildDate());
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
       bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
 #endif
       bridge->begin();
@@ -296,7 +305,7 @@ public:
     bridge->setFirmwareVersion(getFirmwareVer());
     bridge->setBoardModel(_cli.getBoard()->getManufacturerName());
     bridge->setBuildDate(getBuildDate());
-#ifdef WITH_MQTT_BRIDGE
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
     bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
 #endif
     bridge->begin();
@@ -319,6 +328,14 @@ public:
   int getQueueSize() override {
     return bridge ? bridge->getQueueSize() : 0;
   }
+
+#ifdef WITH_MQTT_BRIDGE
+  // Push companion-supplied real radio/mesh stats into the bridge /status (used by
+  // the RAK2305 uplink observer, whose real stats live on the companion nRF52).
+  void setBridgeExternalStats(const MQTTExternalStats& s) {
+    if (bridge) bridge->setExternalStats(s);
+  }
+#endif
 
   bool isMqttBridgeRunning() override {
     return bridge && bridge->isRunning();
