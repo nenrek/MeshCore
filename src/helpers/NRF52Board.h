@@ -21,6 +21,12 @@ struct PowerMgtConfig {
   // Boot protection voltage threshold (millivolts)
   // Set to 0 to disable boot protection
   uint16_t voltage_bootlock;
+
+  // Runtime low-voltage cutoff threshold (millivolts)
+  // Checked periodically while running (battery power only); 0 = disabled.
+  // Keep slightly BELOW voltage_bootlock so a node that just booted at the
+  // bootlock threshold isn't immediately re-shutdown by normal load sag.
+  uint16_t voltage_runtime;
 };
 #endif
 
@@ -39,6 +45,7 @@ protected:
   uint16_t boot_voltage_mv;           // Battery voltage at boot (millivolts)
 
   bool checkBootVoltage(const PowerMgtConfig* config);
+  void runtimeVoltagePoll(const PowerMgtConfig* config);
   void enterSystemOff(uint8_t reason);
   void configureVoltageWake(uint8_t ain_channel, uint8_t refsel);
   virtual void initiateShutdown(uint8_t reason);
@@ -61,6 +68,10 @@ public:
   uint8_t getShutdownReason() const override { return shutdown_reason; }
   const char* getResetReasonString(uint32_t reason) override;
   const char* getShutdownReasonString(uint8_t reason) override;
+
+  // Call from the app loop. Boards with a runtime cutoff configured override
+  // this to poll battery voltage and enter protective SYSTEMOFF when low.
+  virtual void loopPowerMgt() {}
 #endif
 };
 
