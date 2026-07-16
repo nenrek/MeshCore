@@ -22,8 +22,9 @@ const char* BG77Modem::stateName() const {
 static const uint32_t T_AT      = 1000;    // simple AT/OK exchange
 static const uint32_t T_CFG     = 3000;    // config commands
 static const uint32_t T_BOOT    = 15000;   // modem power-up to RDY
-static const uint32_t T_QMTOPEN = 45000;   // TCP + TLS handshake to broker (cellular TLS can be slow)
-static const uint32_t T_QMTCONN = 15000;   // MQTT CONNECT
+static const uint32_t T_QMTOPEN = 90000;   // TCP + TLS handshake to broker (cellular TLS can be slow;
+                                           // weak-signal LTE-M retransmits the handshake, so allow 90 s)
+static const uint32_t T_QMTCONN = 30000;   // MQTT CONNECT (also slow at weak signal)
 static const uint32_t T_PUB     = 15000;   // publish round trip
 static const uint32_t REG_POLL_MS = 3000;  // registration poll cadence
 
@@ -355,8 +356,10 @@ BG77Modem::AtRes BG77Modem::openConnectTick() {
 }
 
 void BG77Modem::enterBackoff(const char* why) {
-  _backoff_step = (_backoff_step < 5) ? _backoff_step + 1 : 5;
-  static const uint32_t table[] = {5000, 15000, 30000, 60000, 120000, 300000};
+  // Cap the backoff at 120 s (step 4) rather than 300 s: a weak-signal node needs to keep
+  // probing so it catches brief good-signal windows instead of sitting idle for 5 min.
+  _backoff_step = (_backoff_step < 4) ? _backoff_step + 1 : 4;
+  static const uint32_t table[] = {5000, 15000, 30000, 60000, 120000};
   _backoff_until = millis() + table[_backoff_step];
   _state = ST_BACKOFF;
   _state_since = millis();
