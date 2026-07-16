@@ -878,6 +878,36 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.tx_power_dbm = LORA_TX_POWER;
   _prefs.gps_enabled = 0;       // GPS disabled by default
   _prefs.gps_interval = 0;      // No automatic GPS updates by default
+#ifdef AB
+  // Asset-beacon defaults (overridden by persisted prefs if present). Zero-hop is
+  // the airtime-safe workhorse (direct neighbours log a coverage point, no mesh
+  // rebroadcast); flood defaults OFF so a moving node isn't hammering every
+  // repeater's duty cycle. Fire a flood manually with the button when wanted.
+  #ifndef AB_ZH_SECS
+    #define AB_ZH_SECS 20
+  #endif
+  #ifndef AB_FLOOD_SECS
+    #define AB_FLOOD_SECS 0
+  #endif
+  #ifndef AB_DEFAULT_ENABLED
+    #define AB_DEFAULT_ENABLED 1
+  #endif
+  #ifndef AB_MOVE_M
+    #define AB_MOVE_M 25
+  #endif
+  #ifndef AB_IDLE_SECS
+    #define AB_IDLE_SECS 300
+  #endif
+  _prefs.ab_enabled    = AB_DEFAULT_ENABLED;
+  _prefs.ab_zh_secs    = AB_ZH_SECS;
+  _prefs.ab_flood_secs = AB_FLOOD_SECS;
+  _prefs.ab_move_m     = AB_MOVE_M;
+  _prefs.ab_idle_secs  = AB_IDLE_SECS;
+  next_ab_zerohop = next_ab_flood = 0;
+  ab_adverts_sent = 0;
+  ab_last_lat = ab_last_lon = 0.0;
+  ab_last_advert_ms = 0;
+#endif
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
 #if defined(USE_SX1262) || defined(USE_SX1268)
 #ifdef SX126X_RX_BOOSTED_GAIN
@@ -935,6 +965,9 @@ void MyMesh::begin(bool has_display) {
   _prefs.tx_power_dbm = constrain(_prefs.tx_power_dbm, -9, MAX_LORA_TX_POWER);
   _prefs.gps_enabled = constrain(_prefs.gps_enabled, 0, 1);  // Ensure boolean 0 or 1
   _prefs.gps_interval = constrain(_prefs.gps_interval, 0, 86400);  // Max 24 hours
+#ifdef AB
+  applyAbPolicy();  // clamp intervals, force GPS + location-share while enabled
+#endif
 
 #ifdef BLE_PIN_CODE // 123456 by default
   if (_prefs.ble_pin == 0) {
@@ -966,6 +999,14 @@ void MyMesh::begin(bool has_display) {
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
   MESH_DEBUG_PRINTLN("RX Boosted Gain Mode: %s",
                      radio_driver.getRxBoostedGainMode() ? "Enabled" : "Disabled");
+#ifdef AB
+  updateAbTimers();  // arm periodic self-advert if enabled
+  // Anti-theft: beacon shortly after boot (a thief power-cycling the node gives you
+  // a fresh position/ping) once GPS has had a moment to start emitting.
+  if (_prefs.ab_enabled && _prefs.ab_flood_secs > 0) {
+    next_ab_flood = futureMillis(30000);  // ~30s after boot
+  }
+#endif
 }
 
 const char *MyMesh::getNodeName() {
@@ -1794,6 +1835,20 @@ void MyMesh::handleCmdFrame(size_t len) {
       strcpy(dp, sensors.getSettingValue(i));
       dp = strchr(dp, 0);
     }
+#ifdef AB
+    {
+      char *base = (char *)&out_frame[1];
+      if (dp - base < 100) {
+        dp += sprintf(dp, "%sab:%u,ab_zh:%u,ab_flood:%u,ab_move:%u,ab_idle:%u",
+                      (dp > base) ? "," : "",
+                      (unsigned)_prefs.ab_enabled,
+                      (unsigned)_prefs.ab_zh_secs,
+                      (unsigned)_prefs.ab_flood_secs,
+                      (unsigned)_prefs.ab_move_m,
+                      (unsigned)_prefs.ab_idle_secs);
+      }
+    }
+#endif
     _serial->writeFrame(out_frame, dp - (char *)out_frame);
   } else if (cmd_frame[0] == CMD_SET_CUSTOM_VAR && len >= 4) {
     cmd_frame[len] = 0;
@@ -1801,8 +1856,12 @@ void MyMesh::handleCmdFrame(size_t len) {
     char *np = strchr(sp, ':'); // look for separator char
     if (np) {
       *np++ = 0; // modify 'cmd_frame', replace ':' with null
-      bool success = sensors.setSettingValue(sp, np);
-      if (success) {
+#ifdef AB
+      if (trySetAbVar(sp, np)) {
+        writeOKFrame();
+      } else
+#endif
+      if (sensors.setSettingValue(sp, np)) {
         #if ENV_INCLUDE_GPS == 1
         // Update node preferences for GPS settings
         if (strcmp(sp, "gps") == 0) {
@@ -2029,6 +2088,19 @@ void MyMesh::checkCLIRescueCmd() {
         _prefs.ble_pin = atoi(&config[4]);
         savePrefs();
         Serial.printf("  > pin is now %06d\n", _prefs.ble_pin);
+#ifdef AB
+      } else if (memcmp(config, "ab", 2) == 0) {  // set ab 1 | set ab_zh 20 | set ab_flood 60
+        const char* sp = strchr(config, ' ');
+        char key[16];
+        size_t klen = sp ? (size_t)(sp - config) : 0;
+        if (sp && klen < sizeof(key) && trySetAbVar((memcpy(key, config, klen), key[klen] = 0, key), sp + 1)) {
+          Serial.printf("  > asset-beacon: en=%u zh=%us flood=%us move=%um idle=%us (gps forced on, loc shared)\n",
+                        _prefs.ab_enabled, _prefs.ab_zh_secs, _prefs.ab_flood_secs,
+                        _prefs.ab_move_m, _prefs.ab_idle_secs);
+        } else {
+          Serial.printf("  Error: unknown config: %s\n", config);
+        }
+#endif
       } else {
         Serial.printf("  Error: unknown config: %s\n", config);
       }
@@ -2228,6 +2300,10 @@ void MyMesh::loop() {
     dirty_contacts_expiry = 0;
   }
 
+#ifdef AB
+  serviceAb();  // fire periodic zero-hop / flood self-adverts while asset-beacon
+#endif
+
 #ifdef DISPLAY_CLASS
   if (_ui) _ui->setHasConnection(_serial->isConnected());
 #endif
@@ -2247,6 +2323,130 @@ bool MyMesh::advert() {
     return false;
   }
 }
+
+#ifdef AB
+// Flood-routed self-advert (propagates mesh-wide via repeaters, like a repeater's
+// periodic flood advert). Carries GPS location when advert_loc_policy != NONE.
+bool MyMesh::floodAdvert() {
+  mesh::Packet* pkt;
+  // Only attach a position when we actually have a fix; otherwise go name-only so
+  // we never broadcast a false 0,0 (an observer hearing even a name-only beacon
+  // still tells you the rough area the node is in).
+  bool have_fix = !(sensors.node_lat == 0.0 && sensors.node_lon == 0.0);
+  if (_prefs.advert_loc_policy == ADVERT_LOC_NONE || !have_fix) {
+    pkt = createSelfAdvert(_prefs.node_name);
+  } else {
+    pkt = createSelfAdvert(_prefs.node_name, sensors.node_lat, sensors.node_lon);
+  }
+  if (!pkt) return false;
+  unsigned long delay_millis = 0;
+  TransportKey scope;
+  memcpy(&scope.key, _prefs.default_scope_key, sizeof(scope.key));
+  sendFloodScoped(scope, pkt, delay_millis);
+  ab_adverts_sent++;
+  recordAbAdvert();
+  return true;
+}
+
+// Asset-beacon only makes sense when every advert carries a fresh position, so
+// force location-share + GPS on (and poll GPS at least as fast as we advert)
+// whenever the mode is enabled. Also clamps the intervals to sane ranges.
+void MyMesh::applyAbPolicy() {
+  _prefs.ab_enabled = _prefs.ab_enabled ? 1 : 0;
+  if (_prefs.ab_zh_secs > 3600) _prefs.ab_zh_secs = 3600;
+  if (_prefs.ab_zh_secs > 0 && _prefs.ab_zh_secs < 5) _prefs.ab_zh_secs = 5;
+  if (_prefs.ab_flood_secs > 3600) _prefs.ab_flood_secs = 3600;
+  // don't let a moving node flood the whole mesh faster than every 30s
+  if (_prefs.ab_flood_secs > 0 && _prefs.ab_flood_secs < 30) _prefs.ab_flood_secs = 30;
+  if (_prefs.ab_move_m > 10000) _prefs.ab_move_m = 10000;      // 10km sanity ceiling
+  if (_prefs.ab_idle_secs > 3600) _prefs.ab_idle_secs = 3600;  // heartbeat <= 1h
+  if (_prefs.ab_enabled) {
+    _prefs.advert_loc_policy = ADVERT_LOC_SHARE;
+#if ENV_INCLUDE_GPS == 1
+    _prefs.gps_enabled = 1;
+    uint32_t want = _prefs.ab_zh_secs ? _prefs.ab_zh_secs : 5;
+    if (want < 3) want = 3;
+    if (_prefs.gps_interval == 0 || _prefs.gps_interval > want) _prefs.gps_interval = want;
+#endif
+  }
+}
+
+void MyMesh::updateAbTimers() {
+  next_ab_zerohop = (_prefs.ab_enabled && _prefs.ab_zh_secs > 0)
+      ? futureMillis((uint32_t)_prefs.ab_zh_secs * 1000) : 0;
+  next_ab_flood = (_prefs.ab_enabled && _prefs.ab_flood_secs > 0)
+      ? futureMillis((uint32_t)_prefs.ab_flood_secs * 1000) : 0;
+}
+
+// Idle gate: returns true when we should SKIP a scheduled advert because the node
+// hasn't moved far enough since the last one. A GPS fix is required to judge
+// movement (no fix -> don't skip, stay visible); a heartbeat forces an advert
+// after ab_idle_secs so a parked node doesn't fall off the map.
+bool MyMesh::abShouldSkip() {
+  if (_prefs.ab_move_m == 0) return false;   // gate disabled
+  if (ab_last_advert_ms == 0) return false;        // no baseline yet -> always send first
+  double lat = sensors.node_lat, lon = sensors.node_lon;
+  if (lat == 0.0 && lon == 0.0) return false;      // no fix -> don't gate
+  // heartbeat: force an advert once the idle window has elapsed
+  if (_prefs.ab_idle_secs > 0 &&
+      (millis() - ab_last_advert_ms) >= (uint32_t)_prefs.ab_idle_secs * 1000) {
+    return false;
+  }
+  // equirectangular distance from last-adverted position, in metres (good at street scale)
+  double dlat = (lat - ab_last_lat) * 111320.0;
+  double dlon = (lon - ab_last_lon) * 111320.0 * cos(lat * 0.017453292519943295);
+  double thresh = (double)_prefs.ab_move_m;
+  return (dlat * dlat + dlon * dlon) < (thresh * thresh);  // skip if within threshold
+}
+
+void MyMesh::recordAbAdvert() {
+  ab_last_lat = sensors.node_lat;
+  ab_last_lon = sensors.node_lon;
+  ab_last_advert_ms = millis();
+}
+
+void MyMesh::serviceAb() {
+  if (!_prefs.ab_enabled) return;
+
+  if (next_ab_flood && millisHasNowPassed(next_ab_flood)) {
+    if (!abShouldSkip()) floodAdvert();  // floodAdvert() records baseline itself
+    next_ab_flood = futureMillis((uint32_t)_prefs.ab_flood_secs * 1000);
+    // stagger so a flood and a zero-hop don't fire back-to-back
+    if (next_ab_zerohop) next_ab_zerohop = futureMillis((uint32_t)_prefs.ab_zh_secs * 1000);
+  } else if (next_ab_zerohop && millisHasNowPassed(next_ab_zerohop)) {
+    if (!abShouldSkip() && advert()) {
+      ab_adverts_sent++;
+      recordAbAdvert();
+    }
+    next_ab_zerohop = futureMillis((uint32_t)_prefs.ab_zh_secs * 1000);
+  }
+}
+
+// Handles the asset-beacon custom-vars (settable from the companion app and the USB
+// CLI). Returns true if 'key' was one of ours (whether or not it changed).
+bool MyMesh::trySetAbVar(const char* key, const char* val) {
+  bool handled = true;
+  if (strcmp(key, "ab") == 0) {
+    _prefs.ab_enabled = (val[0] == '1') ? 1 : 0;
+  } else if (strcmp(key, "ab_zh") == 0) {
+    _prefs.ab_zh_secs = (uint16_t)atoi(val);
+  } else if (strcmp(key, "ab_flood") == 0) {
+    _prefs.ab_flood_secs = (uint16_t)atoi(val);
+  } else if (strcmp(key, "ab_move") == 0) {
+    _prefs.ab_move_m = (uint16_t)atoi(val);
+  } else if (strcmp(key, "ab_idle") == 0) {
+    _prefs.ab_idle_secs = (uint16_t)atoi(val);
+  } else {
+    handled = false;
+  }
+  if (handled) {
+    applyAbPolicy();
+    savePrefs();
+    updateAbTimers();
+  }
+  return handled;
+}
+#endif
 
 // To check if there is pending work
 bool MyMesh::hasPendingWork() const {
