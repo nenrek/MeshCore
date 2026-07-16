@@ -14,6 +14,7 @@ const char* BG77Modem::stateName() const {
     case ST_MQTT_SETUP: return "mqttsetup";
     case ST_READY:      return "ready";
     case ST_BACKOFF:    return "backoff";
+    case ST_GNSS_HOLD:  return "gnsshold";
     default:            return "?";
   }
 }
@@ -455,6 +456,12 @@ void BG77Modem::loop() {
     case ST_BACKOFF:
       if ((long)(millis() - _backoff_until) >= 0) enterState(ST_INIT);  // modem stays powered
       break;
+
+    case ST_GNSS_HOLD:
+      // Idle: the bridge owns the radio for a one-shot GNSS fix. The modem stays here (no
+      // LTE/MQTT activity) until the bridge calls resumeFromGnss(). We deliberately do NOT
+      // treat the closed session as a disconnect-to-reconnect here.
+      break;
   }
 }
 
@@ -495,6 +502,26 @@ bool BG77Modem::publish(const char* topic, const char* payload, size_t len, uint
 }
 
 // ---- GNSS ------------------------------------------------------------------
+
+bool BG77Modem::holdForGnss() {
+  // Close the MQTT session cleanly before GNSS takes the radio. QMTDISC then QMTCLOSE;
+  // both are best-effort (ERROR when not connected is fine). openConnectTick() also does
+  // QMTCLOSE on resume as a backstop against a session lingering on the modem.
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+QMTDISC=%u", MQTT_CLIENT_IDX);
+  sendExpect(cmd, "OK", T_CFG);
+  snprintf(cmd, sizeof(cmd), "AT+QMTCLOSE=%u", MQTT_CLIENT_IDX);
+  sendExpect(cmd, "OK", T_CFG);
+  enterState(ST_GNSS_HOLD);
+  return true;
+}
+
+void BG77Modem::resumeFromGnss() {
+  // Registration survives a GNSS session (only the data bearer was suspended), so jump
+  // straight to MQTT setup; openConnectTick() re-activates the PDP context and reopens
+  // the socket. If the context did drop, its QIACT failure backs off to a full re-init.
+  enterState(ST_MQTT_SETUP);
+}
 
 bool BG77Modem::gnssEnable() {
   // AT+QGPS=1 = standalone GNSS. If it's already on the modem returns an error; treat

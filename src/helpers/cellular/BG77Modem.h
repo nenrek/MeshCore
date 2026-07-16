@@ -35,7 +35,8 @@ public:
     ST_TIME_SYNC,      // reading network time (QLTS) -> RTC
     ST_MQTT_SETUP,     // TLS + QMTCFG + QMTOPEN + QMTCONN
     ST_READY,          // connected to the broker, ready to publish
-    ST_BACKOFF         // error; waiting before a full re-attempt
+    ST_BACKOFF,        // error; waiting before a full re-attempt
+    ST_GNSS_HOLD       // MQTT torn down; GNSS engine owns the radio for a one-shot fix
   };
 
   /**
@@ -99,6 +100,16 @@ public:
    * decimal degrees) if a fix is available; false while still acquiring (CME 516).
    */
   bool gnssGetFix(float& lat, float& lon);
+
+  /**
+   * Pause the MQTT uplink for a one-shot GNSS acquisition. On the BG77 the GNSS engine
+   * preempts the LTE data bearer, so acquiring while connected drops MQTT uncleanly. This
+   * closes the MQTT session and parks the modem in ST_GNSS_HOLD; the caller then runs the
+   * GNSS fix and calls resumeFromGnss() to reconnect. Call only from a connected state.
+   */
+  bool holdForGnss();
+  /** Release the GNSS hold and reconnect MQTT (re-runs TLS setup + open + connect). */
+  void resumeFromGnss();
 
   /**
    * Send a raw AT command and collect the response lines into `out` (newline-joined),

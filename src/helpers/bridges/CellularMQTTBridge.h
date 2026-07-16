@@ -114,9 +114,14 @@ private:
   unsigned long _last_status = 0;
   uint32_t _published = 0, _dropped = 0;
 
-  // GNSS acquisition state
+  // GNSS acquisition state. One-shot per boot: on a stationary node a single fix is all we
+  // need, and each attempt briefly tears down the uplink (BG77 GNSS preempts LTE), so we
+  // don't refresh on success — reboot to re-acquire.
   bool _gps_on = false;
+  bool _gps_done = false;
   unsigned long _gps_started = 0, _gps_last_poll = 0, _gps_next_attempt = 0;
+  static const unsigned long GNSS_ACQ_WINDOW_MS = 120000;   // give a fix 2 min before giving up
+  static const unsigned long GNSS_RETRY_MS      = 1800000;  // 30 min before another disruptive try
 
   // JSON is built in the producer (RX/TX callback, while the packet is valid) into _scratch,
   // then copied into the ring; loop() pops and hands one entry at a time to the modem.

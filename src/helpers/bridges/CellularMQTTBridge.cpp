@@ -148,21 +148,36 @@ void CellularMQTTBridge::loop() {
   // never while a non-blocking bring-up command is in flight — the blocking QGPS/QGPSLOC
   // exchange would flush and clobber that pending response (e.g. the 45s QMTOPEN), breaking
   // the LTE connect. isBusy() gate confines GNSS to the idle gaps between atTick commands.
-  if (_prefs->cellular_gps_enabled && _modem.isUp() && !_modem.isBusy()) handleGnss();
+  // handleGnss() honors cellular_gps_enabled internally (and cleans up if it's switched off
+  // mid-acquisition), so gate only on the modem being idle enough to run a blocking GNSS AT.
+  if (_modem.isUp() && !_modem.isBusy()) handleGnss();
 }
 
 void CellularMQTTBridge::handleGnss() {
   unsigned long now = millis();
-  if (!_gps_on) {
-    if ((long)(now - _gps_next_attempt) >= 0) {   // due for an acquisition attempt
-      _modem.gnssEnable();
-      _gps_on = true;
-      _gps_started = now;
-      _gps_last_poll = 0;
-    }
+
+  // GPS switched off: if we were mid-acquisition, abort cleanly and bring MQTT back so we
+  // never strand the modem in ST_GNSS_HOLD with the uplink down.
+  if (!_prefs->cellular_gps_enabled) {
+    if (_gps_on) { _modem.gnssDisable(); _gps_on = false; _modem.resumeFromGnss(); }
     return;
   }
-  // acquiring: poll for a fix every ~5s; give up after 2 min and retry later
+  if (_gps_done) return;   // stationary node: one good fix per boot (reboot to re-acquire)
+
+  if (!_gps_on) {
+    if ((long)(now - _gps_next_attempt) < 0) return;   // not due yet
+    if (!_modem.isReady()) return;                     // only start from a clean, connected state
+    // BG77 GNSS preempts the LTE data bearer, so tear the MQTT session down first, then
+    // acquire, then resumeFromGnss() reconnects. This is the one-shot "pause" approach.
+    _modem.holdForGnss();
+    _modem.gnssEnable();
+    _gps_on = true;
+    _gps_started = now;
+    _gps_last_poll = 0;
+    return;
+  }
+
+  // Acquiring (modem is parked in ST_GNSS_HOLD): poll for a fix every ~5 s.
   if ((now - _gps_last_poll) < 5000) return;
   _gps_last_poll = now;
   float lat = 0, lon = 0;
@@ -171,11 +186,13 @@ void CellularMQTTBridge::handleGnss() {
     _prefs->node_lon = lon;
     _modem.gnssDisable();
     _gps_on = false;
-    _gps_next_attempt = now + 6UL * 3600 * 1000;   // refresh in 6 h (stationary node)
-  } else if ((now - _gps_started) >= 120000) {
-    _modem.gnssDisable();
+    _gps_done = true;                   // stationary node: done for this boot
+    _modem.resumeFromGnss();            // reconnect the uplink
+  } else if ((now - _gps_started) >= GNSS_ACQ_WINDOW_MS) {
+    _modem.gnssDisable();               // no fix (e.g. no sky view) — resume now, retry later
     _gps_on = false;
-    _gps_next_attempt = now + 10UL * 60 * 1000;     // no fix yet — retry in 10 min
+    _gps_next_attempt = now + GNSS_RETRY_MS;
+    _modem.resumeFromGnss();
   }
 }
 
