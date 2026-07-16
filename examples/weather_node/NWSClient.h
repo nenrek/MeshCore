@@ -21,8 +21,9 @@
   #define NWS_PROXY_PORT 8085
 #endif
 
+// Appleton (ATW) metro: Outagamie, Winnebago, Calumet
 #ifndef NWS_ZONE
-  #define NWS_ZONE "WIZ038,WIZ039,WIZ040"
+  #define NWS_ZONE "WIZ038,WIZ048,WIZ049"
 #endif
 
 #ifndef NWS_MAX_ALERTS
@@ -143,7 +144,7 @@ public:
     snprintf(out, outSize, "%d/%d %d:%02d%s", mon, day, h12, min, ap);
   }
 
-  NWSClient() : _eth_ready(false), _num_alerts(0), _num_sent(0), _min_severity(NWS_SEV_SEVERE) {
+  NWSClient() : _eth_ready(false), _num_alerts(0), _num_sent(0), _min_severity(NWS_SEV_MODERATE) {
     generateMAC();
     memset(_alerts, 0, sizeof(_alerts));
     memset(_sent_hashes, 0, sizeof(_sent_hashes));

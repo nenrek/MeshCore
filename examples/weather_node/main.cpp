@@ -57,7 +57,7 @@ void setup() {
     halt();
   }
   Serial.println("[SETUP] Radio OK");
-  fast_rng.begin(radio_get_rng_seed());
+  fast_rng.begin(radio_driver.getRngSeed());
 
   // STEP 5: Ethernet Setup (SPI1)
   if (!nws_client.begin()) {
