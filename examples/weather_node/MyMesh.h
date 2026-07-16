@@ -13,6 +13,17 @@
   #define NWS_POLL_INTERVAL 120000   // 2 minutes in ms
 #endif
 
+// Mesh broadcast spacing. LoRa is half-duplex + multi-hop: parts/alerts sent too
+// close together flood-collide and get missed. PART_GAP spaces the 3 parts of one
+// alert; ALERT_GAP spaces consecutive alerts (must exceed 2*PART_GAP so a whole
+// alert clears the mesh before the next starts).
+#ifndef NWS_ALERT_PART_GAP_MS
+  #define NWS_ALERT_PART_GAP_MS 8000    // gap between the 3 parts of ONE alert
+#endif
+#ifndef NWS_ALERT_GAP_MS
+  #define NWS_ALERT_GAP_MS 45000        // gap between CONSECUTIVE alerts
+#endif
+
 #ifndef SENSOR_READ_INTERVAL_SECS
   #define SENSOR_READ_INTERVAL_SECS 60
 #endif
@@ -28,6 +39,14 @@
 #undef FIRMWARE_ROLE
 #define FIRMWARE_ROLE "weather"
 
+// Hashtag channel the severe weather alerts broadcast on. Public by design:
+// the key is derived from the name (first 16 bytes of sha256("#name"), same
+// derivation the companion apps use), so anyone can join by adding the
+// hashtag channel in their app. Change at runtime with `nws hashtag <name>`.
+#ifndef NWS_HASHTAG
+  #define NWS_HASHTAG "#atw-wx"
+#endif
+
 // Public channel key
 static const uint8_t NWS_PUB_CHANNEL_KEY[CIPHER_KEY_SIZE] = {
   0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
@@ -38,6 +57,7 @@ class MyMesh : public SensorMesh {
   NWSClient* _nws;
   FILESYSTEM* _nws_fs;
   uint8_t  _severe_key[CIPHER_KEY_SIZE];
+  char     _severe_hashtag[24];
   unsigned long _next_nws_poll;
   unsigned long _next_mesh_broadcast;
   unsigned long _next_weekly_announce;
@@ -71,9 +91,10 @@ public:
       _pending_alert_idx(0), _has_pending_alerts(false),
       _alerts_sent_total(0), _polls_total(0), _last_sent_history_clear(0), _utc_offset(0), _boot_announced(false), _boot_announce_at(0),
       _uk_enabled(false), _uk_port(3001), _uk_interval_ms(300000), _next_uk_push(0), _uk_last_ok(false),
-      _min_severity(NWS_SEV_SEVERE)
+      _min_severity(NWS_SEV_MODERATE)
   {
     memset(_severe_key, 0, sizeof(_severe_key));
+    _severe_hashtag[0] = 0;
     _uk_host[0] = 0;
     _uk_token[0] = 0;
     strncpy(_uk_path, "/api/push/", sizeof(_uk_path));
@@ -91,66 +112,83 @@ public:
   void loadNWSPrefs(FILESYSTEM* fs) {
     _nws_fs = fs;
 
-    // Derive severe weather channel key from node identity + salt (deterministic, unique per node)
-    mesh::Utils::sha256(_severe_key, CIPHER_KEY_SIZE,
-      self_id.pub_key, PUB_KEY_SIZE,
-      (const uint8_t*)"nws-severe-alerts", 17);
-
-    char hex[33];
-    mesh::Utils::toHex(hex, _severe_key, CIPHER_KEY_SIZE);
-    for (int i = 0; hex[i]; i++) hex[i] = tolower(hex[i]);
-    Serial.print("[NWS] Severe channel key: "); Serial.println(hex);
+    // Severe alerts broadcast on a public hashtag channel: the key is derived
+    // from the channel name, so subscribers just add the hashtag in their app.
+    applySevereHashtag(NWS_HASHTAG);
 
     loadUptimePrefs(fs);
 
-    if (!fs || !_nws) return;
-    if (!fs->exists("/nws.cfg")) return;
+    bool has_cfg = fs && _nws && fs->exists("/nws.cfg");
+    bool cfg_has_hashtag = false;
+    if (has_cfg) {
+      File f = fs->open("/nws.cfg");
+      if (f) {
+        char buf[320];
+        int len = f.read((uint8_t*)buf, sizeof(buf) - 1);
+        f.close();
+        if (len > 0) {
+          buf[len] = 0;
 
-    File f = fs->open("/nws.cfg");
-    if (!f) return;
+          char* o = strstr(buf, "utc_offset=");
+          if (o) _utc_offset = (int8_t)atoi(o + 11);
 
-    char buf[256];
-    int len = f.read((uint8_t*)buf, sizeof(buf) - 1);
-    f.close();
-    if (len <= 0) return;
-    buf[len] = 0;
+          char* px = strstr(buf, "proxy=");
+          if (px) {
+            px += 6;
+            char host[64]; int i = 0;
+            while (*px && *px != '\n' && *px != '\r' && i < (int)sizeof(host) - 1) host[i++] = *px++;
+            host[i] = 0;
+            uint16_t port = _nws->getProxyPort();
+            char* pp = strstr(buf, "proxyport=");
+            if (pp) port = (uint16_t)atoi(pp + 10);
+            if (host[0]) { _nws->setProxy(host, port); Serial.print("[NWS] Loaded proxy: "); Serial.print(host); Serial.print(":"); Serial.println(port); }
+          }
+          char* dt = strstr(buf, "display_timeout=");
+          if (dt) _display_data.display_timeout_secs = (uint32_t)atol(dt + 16);
+          char* sv = strstr(buf, "severity=");
+          if (sv) _min_severity = (uint8_t)atoi(sv + 9);
 
-    char* o = strstr(buf, "utc_offset=");
-    if (o) _utc_offset = (int8_t)atoi(o + 11);
+          char* ht = strstr(buf, "hashtag=");
+          if (ht) {
+            ht += 8;
+            char name[24]; int i = 0;
+            while (*ht && *ht != '\n' && *ht != '\r' && i < (int)sizeof(name) - 1) name[i++] = *ht++;
+            name[i] = 0;
+            if (name[0]) { applySevereHashtag(name); cfg_has_hashtag = true; }
+          }
 
-    char* px = strstr(buf, "proxy=");
-    if (px && _nws) {
-      px += 6;
-      char host[64]; int i = 0;
-      while (*px && *px != '\n' && *px != '\r' && i < (int)sizeof(host) - 1) host[i++] = *px++;
-      host[i] = 0;
-      uint16_t port = _nws->getProxyPort();
-      char* pp = strstr(buf, "proxyport=");
-      if (pp) port = (uint16_t)atoi(pp + 10);
-      if (host[0]) { _nws->setProxy(host, port); Serial.print("[NWS] Loaded proxy: "); Serial.print(host); Serial.print(":"); Serial.println(port); }
-    }
-    char* dt = strstr(buf, "display_timeout=");
-    if (dt) _display_data.display_timeout_secs = (uint32_t)atol(dt + 16);
-    char* sv = strstr(buf, "severity=");
-    if (sv) _min_severity = (uint8_t)atoi(sv + 9);
-
-    char* p = strstr(buf, "zones=");
-    if (p) {
-      p += 6;
-      char* end = p;
-      while (*end && *end != '\n' && *end != '\r') end++;
-      *end = 0;
-      if (strlen(p) > 0) {
-        _nws->setZone(p);
-        Serial.print("[NWS] Loaded zones: "); Serial.println(p);
+          // Keep this parse last: it truncates buf at the zones value's end
+          char* p = strstr(buf, "zones=");
+          if (p) {
+            p += 6;
+            char* end = p;
+            while (*end && *end != '\n' && *end != '\r') end++;
+            *end = 0;
+            if (strlen(p) > 0) {
+              _nws->setZone(p);
+              Serial.print("[NWS] Loaded zones: "); Serial.println(p);
+            }
+          }
+        }
       }
     }
 
-    // Sync settings to NWSClient
-    if (_nws) _nws->setMinSeverity(_min_severity);
+    // Config predates the hashtag channel + ATW scoping: apply the new zone
+    // and severity defaults once and persist (proxy/offset/timeout are kept).
+    if (has_cfg && !cfg_has_hashtag) {
+      _nws->setZone(NWS_ZONE);
+      _min_severity = NWS_SEV_MODERATE;
+      saveNWSPrefs();
+      Serial.println("[NWS] Migrated config: hashtag channel + ATW zones");
+    }
 
-    // Sync initial display state
-    if (_nws) strncpy(_display_data.zone, _nws->getZone(), sizeof(_display_data.zone) - 1);
+    Serial.print("[NWS] Severe channel: "); Serial.println(_severe_hashtag);
+
+    // Sync settings to NWSClient + initial display state
+    if (_nws) {
+      _nws->setMinSeverity(_min_severity);
+      strncpy(_display_data.zone, _nws->getZone(), sizeof(_display_data.zone) - 1);
+    }
     _display_data.uk_enabled = _uk_enabled;
     strncpy(_display_data.uk_host, _uk_host, sizeof(_display_data.uk_host) - 1);
     _display_data.uk_port = _uk_port;
@@ -187,13 +225,29 @@ protected:
     return (name && name[0]) ? name : "NWS Alerts";
   }
 
+  // Set the severe alerts hashtag channel. The canonical form keeps the
+  // leading '#' — it is part of the sha256 input, matching the companion-app
+  // hashtag-channel derivation: key = first 16 bytes of sha256("#name").
+  void applySevereHashtag(const char* name) {
+    if (name[0] == '#') {
+      strncpy(_severe_hashtag, name, sizeof(_severe_hashtag) - 1);
+      _severe_hashtag[sizeof(_severe_hashtag) - 1] = 0;
+    } else {
+      _severe_hashtag[0] = '#';
+      strncpy(&_severe_hashtag[1], name, sizeof(_severe_hashtag) - 2);
+      _severe_hashtag[sizeof(_severe_hashtag) - 1] = 0;
+    }
+    mesh::Utils::sha256(_severe_key, CIPHER_KEY_SIZE,
+                        (const uint8_t*)_severe_hashtag, strlen(_severe_hashtag));
+  }
+
   void saveNWSPrefs() {
     if (!_nws_fs || !_nws) return;
-    char buf[256];
+    char buf[320];
     snprintf(buf, sizeof(buf),
-      "utc_offset=%d\ndisplay_timeout=%lu\nseverity=%d\nzones=%s\nproxy=%s\nproxyport=%u\n",
+      "utc_offset=%d\ndisplay_timeout=%lu\nseverity=%d\nhashtag=%s\nzones=%s\nproxy=%s\nproxyport=%u\n",
       (int)_utc_offset, (unsigned long)_display_data.display_timeout_secs, (int)_min_severity,
-      _nws->getZone(), _nws->getProxyHost(), (unsigned)_nws->getProxyPort());
+      _severe_hashtag, _nws->getZone(), _nws->getProxyHost(), (unsigned)_nws->getProxyPort());
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
     _nws_fs->remove("/nws.cfg");
     File f = _nws_fs->open("/nws.cfg", FILE_O_WRITE);
@@ -401,10 +455,12 @@ protected:
       Serial.println("nws utcoffset            - show UTC offset");
       Serial.println("nws utcoffset <hours>    - set UTC offset (e.g. -5 for CDT, -6 for CST)");
       Serial.println("nws severity             - show min broadcast severity");
-      Serial.println("nws severity <level>     - set level: all/minor/moderate/severe/extreme (default: severe)");
+      Serial.println("nws severity <level>     - set level: all/minor/moderate/severe/extreme (default: moderate)");
       Serial.println("display timeout          - show display auto-off timeout");
       Serial.println("display timeout <secs>   - set auto-off (0 or 'off' = always on)");
-      Serial.println("nws channel              - show severe channel key");
+      Serial.println("nws hashtag              - show alerts hashtag channel");
+      Serial.println("nws hashtag <name>       - set alerts hashtag channel (key derived from name)");
+      Serial.println("nws channel              - show hashtag channel + derived key");
       Serial.println("nws announce             - send weekly announcement now");
       Serial.println("--- Uptime Kuma Commands ---");
       Serial.println("uptime status            - show UK config");
@@ -466,8 +522,8 @@ protected:
       snprintf(meta, sizeof(meta), "Issued %s by NWS Green Bay WI", issued);
       Serial.print("[NWS-TEST] 2/3: "); Serial.println(summary);
       Serial.print("[NWS-TEST] 3/3: "); Serial.println(meta);
-      broadcastWeatherAlert("[Test] Special Weather Statement", summary, meta);
-      strcpy(reply, "Test alert sent (3 parts)");
+      broadcastWeatherAlert("Special Weather Statement", summary, meta, /*is_test=*/true);
+      strcpy(reply, "Test alert sent (3 parts, each tagged [TEST])");
       return true;
     }
 
@@ -549,18 +605,28 @@ protected:
       return true;
     }
 
-    // nws channel  → print the severe weather channel QR URL
+    // nws hashtag          → show alerts hashtag channel
+    // nws hashtag <name>   → set alerts hashtag channel (key re-derived), persist
+    if (strcmp(command, "nws hashtag") == 0) {
+      snprintf(reply, 160, "Hashtag channel: %s", _severe_hashtag);
+      return true;
+    }
+    if (strncmp(command, "nws hashtag ", 12) == 0) {
+      const char* name = command + 12;
+      while (*name == ' ') name++;
+      if (!*name) { strcpy(reply, "Error: no name given"); return true; }
+      applySevereHashtag(name);
+      saveNWSPrefs();
+      snprintf(reply, 160, "Hashtag channel set: %s", _severe_hashtag);
+      return true;
+    }
+
+    // nws channel  → show the hashtag channel and its derived key
     if (strcmp(command, "nws channel") == 0) {
       char hex[33];
       mesh::Utils::toHex(hex, _severe_key, CIPHER_KEY_SIZE);
       for (int i = 0; hex[i]; i++) hex[i] = tolower(hex[i]);
-      const char* name = getDisplayName();
-      char enc[33];
-      int j = 0;
-      for (int i = 0; name[i] && j < 32; i++)
-        enc[j++] = (name[i] == ' ') ? '+' : name[i];
-      enc[j] = 0;
-      snprintf(reply, 160, "meshcore://channel/add?name=%s+NWS&secret=%s", enc, hex);
+      snprintf(reply, 160, "%s (add as hashtag channel) key=%s", _severe_hashtag, hex);
       return true;
     }
 
@@ -642,11 +708,11 @@ protected:
       EthernetClient testClient;
       testClient.setConnectionTimeout(10000);
       IPAddress proxy;
-      proxy.fromString(NWS_PROXY_IP);
-      int result = testClient.connect(proxy, NWS_PROXY_PORT);
+      if (!_nws->resolveProxy(proxy)) { strcpy(reply, "Proxy DNS resolve failed"); return true; }
+      int result = testClient.connect(proxy, _nws->getProxyPort());
       if (result) {
         testClient.println("GET /health HTTP/1.1");
-        testClient.print("Host: "); testClient.println(NWS_PROXY_IP);
+        testClient.print("Host: "); testClient.println(_nws->getProxyHost());
         testClient.println("Connection: close");
         testClient.println();
         unsigned long timeout = millis();
@@ -670,26 +736,15 @@ protected:
 
   /* ========================== Mesh Broadcast ========================== */
 
-  // Once a week: post two messages to the public channel —
-  // an invitation and then the bare secret for easy copy-paste
+  // Once a week: tell the public channel where the alerts live. The alerts
+  // channel is a hashtag channel, so the name IS the key — one message, no
+  // secret to distribute.
   void announceChannelToPublic() {
-    char hex[33];
-    mesh::Utils::toHex(hex, _severe_key, CIPHER_KEY_SIZE);
-    for (int i = 0; hex[i]; i++) hex[i] = tolower(hex[i]);
-
-    const char* name = getDisplayName();
-    uint32_t base_delay = getRNG()->nextInt(500, 2000);
-
-    // Packet 1: invite, tells the user the next message is the key
-    char invite[160];
-    snprintf(invite, sizeof(invite),
-      "%s: Join our severe weather alerts channel. Public Key:", name);
-    sendGroupMsg(NWS_PUB_CHANNEL_KEY, invite, base_delay);
-
-    // Packet 2: the secret as message body (name prefix required for correct display)
-    char key_msg[160];
-    snprintf(key_msg, sizeof(key_msg), "%s: %s", name, hex);
-    sendGroupMsg(NWS_PUB_CHANNEL_KEY, key_msg, base_delay + 4000);
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+      "%s: NWS weather alerts for the Appleton (ATW) area on %s - add it as a hashtag channel to join.",
+      getDisplayName(), _severe_hashtag);
+    sendGroupMsg(NWS_PUB_CHANNEL_KEY, msg, getRNG()->nextInt(500, 2000));
 
     Serial.println("[NWS] Weekly channel announcement sent to public channel");
   }
@@ -714,11 +769,24 @@ protected:
   //   1/3 header   "[Severity] Event"
   //   2/3 detail   distilled hazard summary
   //   3/3 meta     "Issued <date/time> by <office>"
-  void broadcastWeatherAlert(const char* header, const char* detail, const char* meta) {
+  void broadcastWeatherAlert(const char* header, const char* detail, const char* meta,
+                             bool is_test = false) {
     uint32_t base_delay = getRNG()->nextInt(500, 2000);
-    sendAlertPart(header, 1, 3, base_delay);
-    sendAlertPart(detail, 2, 3, base_delay + 4000);
-    sendAlertPart(meta,   3, 3, base_delay + 8000);
+    if (is_test) {
+      // A test must be unmistakable: tag EVERY part with [TEST], so no single part
+      // can be mistaken for a real alert if the others are missed on the mesh.
+      char h[96], d[176], m[96];
+      snprintf(h, sizeof(h), "[TEST] %s", header);
+      snprintf(d, sizeof(d), "[TEST] %s", detail);
+      snprintf(m, sizeof(m), "[TEST] %s", meta);
+      sendAlertPart(h, 1, 3, base_delay);
+      sendAlertPart(d, 2, 3, base_delay + NWS_ALERT_PART_GAP_MS);
+      sendAlertPart(m, 3, 3, base_delay + 2 * NWS_ALERT_PART_GAP_MS);
+    } else {
+      sendAlertPart(header, 1, 3, base_delay);
+      sendAlertPart(detail, 2, 3, base_delay + NWS_ALERT_PART_GAP_MS);
+      sendAlertPart(meta,   3, 3, base_delay + 2 * NWS_ALERT_PART_GAP_MS);
+    }
 
     _alerts_sent_total++;
     _display_data.alerts_sent_total = _alerts_sent_total;
@@ -801,7 +869,7 @@ public:
           _nws->markAlertSent(_pending_alert_idx);
           _pending_alert_idx++;
           found = true;
-          _next_mesh_broadcast = futureMillis(20000);  // 3 parts span ~8s; leave buffer
+          _next_mesh_broadcast = futureMillis(NWS_ALERT_GAP_MS);  // let this alert's parts clear the mesh first
           break;
         }
         _pending_alert_idx++;
