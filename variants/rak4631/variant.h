@@ -133,17 +133,22 @@ extern "C"
 /*
  * SPI Interfaces
  */
-#define SPI_INTERFACES_COUNT 1
+#define SPI_INTERFACES_COUNT 2
 
-#define PIN_SPI_MISO (29)
-#define PIN_SPI_MOSI (30)
-#define PIN_SPI_SCK (3)
+// SPI0: SX1262 LoRa radio (directly wired on RAK4631 core module)
+#define PIN_SPI_MISO (45)
+#define PIN_SPI_MOSI (44)
+#define PIN_SPI_SCK (43)
 
-	static const uint8_t SS = 26;
-	static const uint8_t MOSI = PIN_SPI_MOSI;
-	static const uint8_t MISO = PIN_SPI_MISO;
-	static const uint8_t SCK = PIN_SPI_SCK;
+// SPI1: WisBlock IO slot (shared bus for RAK13800 ethernet, eink, etc.)
+#define PIN_SPI1_MISO (29)
+#define PIN_SPI1_MOSI (30)
+#define PIN_SPI1_SCK (3)
 
+        static const uint8_t SS = 42;
+        static const uint8_t MOSI = PIN_SPI_MOSI;
+        static const uint8_t MISO = PIN_SPI_MISO;
+        static const uint8_t SCK = PIN_SPI_SCK;
 // LoRa radio module pins for RAK4631
 #define  P_LORA_DIO_1 (47)
 #define  P_LORA_NSS (42)
