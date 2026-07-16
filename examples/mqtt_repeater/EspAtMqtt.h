@@ -119,9 +119,14 @@ class EspAtMqtt {
   float _freq, _bw; uint8_t _sf, _cr;   // radio params for /status
   uint16_t _batt_mv; int16_t _noise;    // observer telemetry (fed from main.cpp)
   uint32_t _tx_air, _rx_air, _recv_err;
+  // Full radio/mesh stats snapshot (fed from main.cpp; pushed to ESP32 via MCSTA
+  // so the observer's /status carries the REAL nRF52 stats, not the ESP32's blanks).
+  uint32_t _stat_queue, _stat_uptime, _stat_pkts_sent, _stat_pkts_recv;
+  uint16_t _stat_errflags;
   int8_t   _rssi_offset;                 // dB subtracted from reported RSSI (FEM/LNA gain)
   uint8_t  _rfpower;                      // ESP-AT WiFi TX power cap (0.25dBm units)
   char     _pubkey_hex[2 * PUB_KEY_SIZE + 1];
+  char     _privkey_hex[2 * PRV_KEY_SIZE + 1];   // for UART_UPLINK identity push
   char     _client_id[40];
 
   // ---- connection state machine ----
@@ -456,6 +461,8 @@ public:
       _enabled(false), _port(MQTT_DEFAULT_PORT), _scheme(MQTT_DEFAULT_SCHEME),
       _node_name(nullptr), _freq(0), _bw(0), _sf(0), _cr(0),
       _batt_mv(0), _noise(0), _tx_air(0), _rx_air(0), _recv_err(0),
+      _stat_queue(0), _stat_uptime(0), _stat_pkts_sent(0), _stat_pkts_recv(0),
+      _stat_errflags(0),
       _rssi_offset(MQTT_RSSI_FEM_OFFSET), _rfpower(MQTT_RFPOWER_DEFAULT),
       _cstate(CS_OFF), _step(ST_ATE0), _step_sent(false),
       _step_deadline(0), _backoff_until(0), _backoff_ms(MQTT_BACKOFF_MIN_MS),
@@ -467,13 +474,20 @@ public:
       _pub_fail_run(0)
   {
     _ssid[0] = _wifi_pass[0] = _host[0] = _user[0] = _pass[0] = 0;
-    _ws_path[0] = _iata[0] = _pubkey_hex[0] = _client_id[0] = 0;
+    _ws_path[0] = _iata[0] = _pubkey_hex[0] = _client_id[0] = _privkey_hex[0] = 0;
     strncpy(_prefix, "meshcore", sizeof(_prefix));
   }
 
   void setStream(Stream* s)        { _at = s; }
   void setRTC(mesh::RTCClock* r)   { _rtc = r; }
   void setNodeName(const char* n)  { _node_name = n; }
+  // Fire-and-forget relay of a raw command to the ESP32 (framed as MCCMD, same as
+  // the `esp <cmd>` console path but without blocking for the reply). Used by the
+  // load-shed state machine to push `net shed` / `net resume` on battery events.
+  void sendEspCommand(const char* cmd) {
+    if (!_at) return;
+    _at->print("MCCMD "); _at->print(cmd); _at->print("\r\n");
+  }
   // freq in MHz, bw in kHz, sf, cr — for the /status "radio" field (Beacon
   // wants exactly "freq,bw,sf,cr" or it skips the radio info).
   void setRadio(float freq, float bw, uint8_t sf, uint8_t cr) {
@@ -482,13 +496,23 @@ public:
   // Observer telemetry snapshot for the /status "stats" block. Pushed from the
   // main loop (throttled) since the bridge can't reach board/mesh/radio directly.
   void setStats(uint16_t batt_mv, int16_t noise, uint32_t tx_air_s,
-                uint32_t rx_air_s, uint32_t recv_err) {
+                uint32_t rx_air_s, uint32_t recv_err,
+                uint32_t queue_len, uint32_t uptime_s, uint16_t err_flags,
+                uint32_t pkts_sent, uint32_t pkts_recv) {
     _batt_mv = batt_mv; _noise = noise;
     _tx_air = tx_air_s; _rx_air = rx_air_s; _recv_err = recv_err;
+    _stat_queue = queue_len; _stat_uptime = uptime_s; _stat_errflags = err_flags;
+    _stat_pkts_sent = pkts_sent; _stat_pkts_recv = pkts_recv;
   }
   void setPubKey(const uint8_t* k, int len) {
     int n = len > PUB_KEY_SIZE ? PUB_KEY_SIZE : len;
     toHex(_pubkey_hex, k, n);
+  }
+  // The node's private key, pushed to the ESP32 over UART (UART_UPLINK) so it
+  // adopts this node's identity and publishes as one logical device.
+  void setPrivKey(const uint8_t* k, int len) {
+    int n = len > PRV_KEY_SIZE ? PRV_KEY_SIZE : len;
+    toHex(_privkey_hex, k, n);
   }
   bool isEnabled()  const { return _enabled; }
   bool isOnline()   const { return _cstate == CS_ONLINE; }
@@ -581,12 +605,23 @@ public:
     uint8_t raw_len = pkt->writeTo(raw);
     toHex(raw_hex, raw, raw_len);
 
-    char ts[40]; isoTime(ts, sizeof(ts));
     // Correct for the RAK13302 FEM/LNA gain so RSSI is antenna-referred (see
     // _rssi_offset / `mqtt rssioffset`). SNR is unaffected by the LNA.
     int rssi = (int)radio_driver.getLastRSSI() - _rssi_offset;
     float snr = pkt->getSNR();
 
+#ifdef UART_UPLINK
+    // UART-uplink mode: the RAK2305 now runs native MeshCore MQTT firmware and
+    // owns WiFi/NTP/MQTT/JWT, the observer identity, the topic, and the timestamp.
+    // The nRF52 just ships the raw frame + radio metrics in a minimal line:
+    //     MCPKT <raw_hex> <SNR f.2> <RSSI int>\r\n
+    // The ESP32 re-parses <raw_hex> into a packet and feeds storeRawRadioData().
+    // No origin_id/timestamp here — the ESP32 supplies its own observer identity
+    // and NTP-sourced time, and (unlike ESP-AT) carries the full untruncated key.
+    snprintf(p, sizeof(p), "MCPKT %s %.2f %d", raw_hex, (double)snr, rssi);
+    enqueue(LEAF_PACKETS, p, false);
+#else
+    char ts[40]; isoTime(ts, sizeof(ts));
     // Minimal meshcoretomqtt packet envelope (Beacon / meshmapper). `raw` is the
     // ONLY required field — the broker-side decoder rebuilds hash/type/path/etc.
     // from it. Earlier we also sent numeric len/payload_len/packet_type; Beacon's
@@ -597,10 +632,75 @@ public:
       "{\"raw\":\"%s\",\"origin_id\":\"%s\",\"timestamp\":\"%s\",\"SNR\":%.2f,\"RSSI\":%d}",
       raw_hex, _pubkey_hex, ts, (double)snr, rssi);
     enqueue(LEAF_PACKETS, p, false);
+#endif
   }
 
   /* ===================== main loop ===================== */
   void loop() {
+#ifdef UART_UPLINK
+    // No AT handshake in uplink mode — the RAK2305 runs native MQTT firmware and
+    // reads our framed lines off Serial1. Just drain the queue, one frame per
+    // call so a burst can't stall LoRa RX, newline-terminated for line framing.
+    // (The ESP32 publishes its own /status heartbeat, so none is sent here.)
+    if (!_enabled || !_at) return;
+    unsigned long now = millis();
+    // Receive UTC time from the ESP32 (it has NTP; this node has no RTC):
+    // "MCTIME <utc_epoch>" -> set our clock so adverts/packets are stamped right.
+    {
+      static char trl[48]; static int trli = 0;
+      while (_at->available()) {
+        char c = (char)_at->read();
+        if (c == '\n' || c == '\r') {
+          if (trli > 0) {
+            trl[trli] = 0;
+            if (_rtc && strncmp(trl, "MCTIME ", 7) == 0) {
+              uint32_t epoch = (uint32_t)strtoul(trl + 7, nullptr, 10);
+              if (epoch > 1735689600UL) _rtc->setCurrentTime(epoch);
+            }
+            trli = 0;
+          }
+        } else if (trli < (int)sizeof(trl) - 1) {
+          trl[trli++] = c;
+        } else { trli = 0; }
+      }
+    }
+    // Push this node's identity + info to the ESP32 so the two act as ONE logical
+    // device: the ESP32 publishes AS this node (same key/name), with this node's
+    // real radio config and battery. nRF52 is the source of truth; sent
+    // periodically so it survives an ESP32 reboot and tracks any change.
+    static unsigned long next_sync = 0;
+    if ((long)(now - next_sync) >= 0) {
+      next_sync = now + 15000UL;
+      char ln[160];
+      if (_privkey_hex[0]) {                       // identity (so ESP32 = this node)
+        snprintf(ln, sizeof(ln), "MCIDENT %s", _privkey_hex); _at->print(ln); _at->print("\r\n");
+      }
+      if (_node_name && _node_name[0]) {           // observer name
+        snprintf(ln, sizeof(ln), "MCNAME %s", _node_name); _at->print(ln); _at->print("\r\n");
+      }
+      snprintf(ln, sizeof(ln), "MCRADIO %.3f %.1f %u %u",   // radio config
+               (double)_freq, (double)_bw, (unsigned)_sf, (unsigned)_cr); _at->print(ln); _at->print("\r\n");
+      snprintf(ln, sizeof(ln), "MCBATT %u", (unsigned)_batt_mv);  // battery mV
+      _at->print(ln); _at->print("\r\n");
+      // Full stats snapshot so the ESP32 /status reports the REAL radio/mesh stats
+      // (it has no radio of its own). Order: noise tx_air rx_air recv_err queue
+      // uptime errflags pkts_sent pkts_recv. Battery goes via MCBATT (above).
+      snprintf(ln, sizeof(ln), "MCSTA %d %lu %lu %lu %lu %lu %u %lu %lu",
+               (int)_noise,
+               (unsigned long)_tx_air, (unsigned long)_rx_air, (unsigned long)_recv_err,
+               (unsigned long)_stat_queue, (unsigned long)_stat_uptime,
+               (unsigned)_stat_errflags,
+               (unsigned long)_stat_pkts_sent, (unsigned long)_stat_pkts_recv);
+      _at->print(ln); _at->print("\r\n");
+    }
+    PubItem* it = qfront();
+    if (it) {
+      _at->write((const uint8_t*)it->payload, it->len);
+      _at->print("\r\n");
+      qpop();
+      _pub_ok++;
+    }
+#else
     if (!_enabled || !_at || _no_hw) return;
     pump();
     unsigned long now = millis();
@@ -611,11 +711,48 @@ public:
       case CS_ONLINE:  serviceOnline(now); break;
       case CS_BACKOFF: if ((long)(now - _backoff_until) >= 0) _cstate = CS_OFF; break;
     }
+#endif
   }
 
   /* ===================== CLI ===================== */
   // Returns true if the command was one of ours.
   bool handleCommand(const char* cmd, char* reply) {
+#ifdef UART_UPLINK
+    // Relay a CLI command to the RAK2305 observer over UART1 and surface its
+    // reply here — so the USB-less ESP32 is configurable from this MeshCore CLI
+    // (and, via the command hook, the remote-admin interface). Examples:
+    //   esp set wifi.ssid <s>   /  esp set mqtt2.preset rflab  /  esp get mqtt.status
+    if (strncmp(cmd, "esp ", 4) == 0) {
+      if (!_at) { strcpy(reply, "no UART"); return true; }
+      while (_at->available()) _at->read();              // drop stale rx
+      _at->print("MCCMD "); _at->print(cmd + 4); _at->print("\r\n");
+      char line[200]; int li = 0; bool got = false;
+      reply[0] = 0;
+      unsigned long until = millis() + 2500;             // wait for the reply
+      while ((long)(millis() - until) < 0) {
+        while (_at->available()) {
+          char c = (char)_at->read();
+          if (c == '\n' || c == '\r') {
+            if (li > 0) {
+              line[li] = 0;
+              if (strncmp(line, "MCRSP ", 6) == 0) {
+                Serial.print("  [esp] "); Serial.println(line + 6);
+                if (!got) { strncpy(reply, line + 6, 159); reply[159] = 0; got = true; }
+                until = millis() + 300;                  // brief tail for extra lines
+              }
+              li = 0;
+            }
+          } else if (li < (int)sizeof(line) - 1) {
+            line[li++] = c;
+          } else {
+            li = 0;
+          }
+        }
+      }
+      if (!got) strcpy(reply, "(no response from RAK2305)");
+      return true;
+    }
+#endif
     if (strcmp(cmd, "mqtt status") == 0) {
       const char* st = _no_hw ? "no-2305" :
                        _cstate == CS_ONLINE ? "online" :

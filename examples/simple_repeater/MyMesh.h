@@ -199,6 +199,10 @@ public:
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
+  // Observer /status helpers. _mgr and _err_flags are protected on Dispatcher, so
+  // expose them here for main.cpp's stats push to the ESP32.
+  int getOutboundQueueLen() const { return _mgr->getOutboundTotal(); }
+  uint16_t getErrFlagsStat() const { return _err_flags; }
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
