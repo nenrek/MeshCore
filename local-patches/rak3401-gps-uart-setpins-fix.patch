@@ -1,0 +1,42 @@
+diff --git a/src/helpers/sensors/EnvironmentSensorManager.cpp b/src/helpers/sensors/EnvironmentSensorManager.cpp
+index 73842d9e..e14fba38 100644
+--- a/src/helpers/sensors/EnvironmentSensorManager.cpp
++++ b/src/helpers/sensors/EnvironmentSensorManager.cpp
+@@ -732,7 +732,7 @@ bool EnvironmentSensorManager::setSettingValue(const char* name, const char* val
+ #if ENV_INCLUDE_GPS
+ void EnvironmentSensorManager::initBasicGPS() {
+ 
+-  Serial1.setPins(PIN_GPS_TX, PIN_GPS_RX);
++  Serial1.setPins(PIN_GPS_RX, PIN_GPS_TX);   // core signature is setPins(rx, tx) -- RX first
+ 
+   #ifdef GPS_BAUD_RATE
+   Serial1.begin(GPS_BAUD_RATE);
+@@ -748,14 +748,23 @@ void EnvironmentSensorManager::initBasicGPS() {
+     MESH_DEBUG_PRINTLN("No GPS wake/reset pin found for this board. Continuing on...");
+   #endif
+ 
+-  // Give GPS a moment to power up and send data
+-  delay(1000);
+-
+-  // We'll consider GPS detected if we see any data on Serial1
++  // Give GPS time to cold-boot and start emitting NMEA (can take a few
++  // seconds); poll instead of a single one-shot check.
+ #ifdef ENV_SKIP_GPS_DETECT
+   gps_detected = true;
+ #else
+-  gps_detected = (Serial1.available() > 0);
++  gps_detected = false;
++  for (int i = 0; i < 60 && !gps_detected; i++) {   // up to ~6s
++    if (Serial1.available() > 0) gps_detected = true;
++    else delay(100);
++  }
++#endif
++#ifdef MESH_DEBUG
++  MESH_DEBUG_PRINTLN("---- raw Serial1 dump (4s) RX=%d TX=%d ----", PIN_GPS_RX, PIN_GPS_TX);
++  { unsigned long _t = millis(); int _n = 0;
++    while (millis() - _t < 4000) { while (Serial1.available()) { Serial.write(Serial1.read()); _n++; } }
++    MESH_DEBUG_PRINTLN("\n---- raw dump end: %d bytes ----", _n);
++  }
+ #endif
+ 
+   if (gps_detected) {
