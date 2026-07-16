@@ -521,8 +521,12 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
-#ifdef WITH_MQTT_BRIDGE
-  // MQTT bridge: always feed RX packets — bridge decides based on mqtt.rx setting
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
+  // MQTT bridge (WiFi or cellular): always feed RX packets — the bridge decides
+  // based on its own rx setting (mqtt.rx / cellular_rx_enabled). Do NOT gate on
+  // bridge_pkt_src here: its "migrate to logRx" fix-up is WITH_MQTT_BRIDGE-only,
+  // so on the cellular build it can be left at 0 and would silently starve the
+  // packet feed (status still publishes, but no packets ever reach MQTT).
   if (bridge) bridge->onPacketReceived(pkt);
 #elif defined(WITH_BRIDGE)
   // Non-MQTT bridge (ESP-NOW): use bridge.source setting
