@@ -98,6 +98,9 @@ public:
   void loop();
   void handleCmdFrame(size_t len);
   bool advert();
+#ifdef AB
+  bool floodAdvert();   // asset-beacon: flood-routed self-advert (button / auto timer)
+#endif
   void enterCLIRescue();
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
@@ -256,6 +259,19 @@ private:
 
   #define ADVERT_PATH_TABLE_SIZE   16
   AdvertPath advert_paths[ADVERT_PATH_TABLE_SIZE]; // circular table
+
+#ifdef AB
+  unsigned long next_ab_zerohop, next_ab_flood; // 0 = timer disabled
+  uint32_t ab_adverts_sent;
+  double ab_last_lat, ab_last_lon;    // position we last actually adverted from
+  unsigned long ab_last_advert_ms;    // 0 = no baseline yet
+  void applyAbPolicy();     // force GPS/location-share on while enabled, clamp intervals
+  void updateAbTimers();    // (re)schedule from current prefs
+  void serviceAb();         // called each loop()
+  bool abShouldSkip();      // idle gate: true = stationary, skip this scheduled advert
+  void recordAbAdvert();    // remember position/time of an advert we just sent
+  bool trySetAbVar(const char* key, const char* val); // returns true if key handled
+#endif
 };
 
 extern MyMesh the_mesh;

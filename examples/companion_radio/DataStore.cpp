@@ -238,6 +238,12 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs) {
     file.read((uint8_t *)&_prefs.rx_boosted_gain, sizeof(_prefs.rx_boosted_gain));         // 89
     file.read((uint8_t *)_prefs.default_scope_name, sizeof(_prefs.default_scope_name));    // 90
     file.read((uint8_t *)_prefs.default_scope_key, sizeof(_prefs.default_scope_key));     // 121
+    // appended fields: short-read on legacy files leaves caller-set defaults intact
+    file.read((uint8_t *)&_prefs.ab_enabled, sizeof(_prefs.ab_enabled));       // 137
+    file.read((uint8_t *)&_prefs.ab_zh_secs, sizeof(_prefs.ab_zh_secs));       // 138
+    file.read((uint8_t *)&_prefs.ab_flood_secs, sizeof(_prefs.ab_flood_secs)); // 140
+    file.read((uint8_t *)&_prefs.ab_move_m, sizeof(_prefs.ab_move_m));         // 142
+    file.read((uint8_t *)&_prefs.ab_idle_secs, sizeof(_prefs.ab_idle_secs));   // 144
 
     // migrate old fields
     _prefs.setRepeatEn(_prefs._client_repeat != 0);

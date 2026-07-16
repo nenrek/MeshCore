@@ -458,8 +458,14 @@ public:
     }
     if (c == KEY_ENTER && _page == HomePage::ADVERT) {
       _task->notify(UIEventType::ack);
+#ifdef AB
+      // asset-beacon: button = manual flood advert (mesh-wide position beacon)
+      if (the_mesh.floodAdvert()) {
+        _task->showAlert("Flood advert sent", 1000);
+#else
       if (the_mesh.advert()) {
         _task->showAlert("Advert sent!", 1000);
+#endif
       } else {
         _task->showAlert("Advert failed..", 1000);
       }

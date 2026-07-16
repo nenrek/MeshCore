@@ -38,6 +38,12 @@ public:
   uint8_t autoadd_max_hops = 0;  // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops (max 64)
   char default_scope_name[31];
   uint8_t default_scope_key[16];
+  // --- asset-beacon (AB build): periodic self-advert like a repeater ---
+  uint8_t  ab_enabled = 0;    // 0=off, 1=periodic auto-advert while asset-beacon
+  uint16_t ab_zh_secs = 0;    // zero-hop advert interval (secs), 0=off
+  uint16_t ab_flood_secs = 0; // flood advert interval (secs), 0=off / button-only
+  uint16_t ab_move_m = 0;     // min metres moved before re-adverting, 0=disabled (no idle gate)
+  uint16_t ab_idle_secs = 0;  // heartbeat: max secs between adverts while stationary, 0=never force
 
 private:
   class RadioPrefs : public ConfigSerializer {  // COPIED from CommonCLI (for now)
@@ -114,6 +120,21 @@ private:
   };
   CompanionPrefs companion;
 
+  class AssetBeaconPrefs : public ConfigSerializer {  // AB build: movement-gated GPS flood adverts
+    NodePrefs* _parent;
+  protected:
+    void structure() override {
+      def("en", _parent->ab_enabled);
+      def("zh", _parent->ab_zh_secs);
+      def("flood", _parent->ab_flood_secs);
+      def("move", _parent->ab_move_m);
+      def("idle", _parent->ab_idle_secs);
+    }
+  public:
+    AssetBeaconPrefs(NodePrefs* parent) : _parent(parent) { }
+  };
+  AssetBeaconPrefs assetbeacon;
+
 protected:
   void structure() override {
     def("name", node_name, sizeof(node_name));
@@ -125,9 +146,10 @@ protected:
     def("gps", gps);
     def("repeat", repeat);
     def("comp", companion);
+    def("ab", assetbeacon);
   }
 public:
-  NodePrefs() : radio(this), gps(this), companion(this) {
+  NodePrefs() : radio(this), gps(this), companion(this), assetbeacon(this) {
     node_name[0] = 0;
     default_scope_name[0] = 0;
     memset(default_scope_key, 0, sizeof(default_scope_key));
