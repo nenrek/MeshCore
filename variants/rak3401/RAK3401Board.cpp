@@ -9,8 +9,13 @@
 const PowerMgtConfig power_config = {
   .lpcomp_ain_channel = PWRMGT_LPCOMP_AIN,
   .lpcomp_refsel = PWRMGT_LPCOMP_REFSEL,
-  .voltage_bootlock = PWRMGT_VOLTAGE_BOOTLOCK
+  .voltage_bootlock = PWRMGT_VOLTAGE_BOOTLOCK,
+  .voltage_runtime = PWRMGT_VOLTAGE_RUNTIME
 };
+
+void RAK3401Board::loopPowerMgt() {
+  runtimeVoltagePoll(&power_config);
+}
 
 void RAK3401Board::initiateShutdown(uint8_t reason) {
   // Disable SKY66122 FEM (CSD+CPS LOW = shutdown, <1 uA)

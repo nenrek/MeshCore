@@ -20,6 +20,10 @@ public:
   RAK3401Board() : NRF52Board("RAK3401_OTA") {}
   void begin();
 
+#ifdef NRF52_POWER_MANAGEMENT
+  void loopPowerMgt() override;
+#endif
+
   #define BATTERY_SAMPLES 8
 
   uint16_t getBattMilliVolts() override {

@@ -126,6 +126,38 @@ bool NRF52Board::checkBootVoltage(const PowerMgtConfig* config) {
   return true;
 }
 
+void NRF52Board::runtimeVoltagePoll(const PowerMgtConfig* config) {
+  // Periodic runtime low-voltage cutoff. Complements checkBootVoltage(): that
+  // one only protects at boot, so without this a node drains to hard brownout
+  // (deep-discharging the pack) before the boot lock can catch it.
+  static unsigned long next_check = 30000;   // first check 30s after boot (let rails settle)
+  static uint8_t low_count = 0;
+
+  if (config->voltage_runtime == 0) return;  // disabled
+  if (millis() < next_check) return;
+  next_check = millis() + 30000;
+
+  if (isExternalPowered()) {
+    low_count = 0;
+    return;
+  }
+
+  uint16_t mv = getBattMilliVolts();
+  // Ignore invalid reads (<=1000mV = ADC glitch), same rule as the boot check.
+  if (mv <= 1000 || mv >= config->voltage_runtime) {
+    low_count = 0;
+    return;
+  }
+
+  // Debounce: require 4 consecutive low readings (~2 min) so a TX-burst sag
+  // or momentary load spike can't trigger a shutdown.
+  if (++low_count >= 4) {
+    MESH_DEBUG_PRINTLN("PWRMGT: Runtime voltage %u mV < %u mV - entering protective shutdown",
+        mv, config->voltage_runtime);
+    initiateShutdown(SHUTDOWN_REASON_LOW_VOLTAGE);  // does not return
+  }
+}
+
 void NRF52Board::initiateShutdown(uint8_t reason) {
   enterSystemOff(reason);
 }

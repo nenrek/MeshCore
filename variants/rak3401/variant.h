@@ -81,6 +81,21 @@ extern "C"
 // Power management boot protection threshold (millivolts)
 // Set to 0 to disable boot protection
 #define PWRMGT_VOLTAGE_BOOTLOCK 3300   // Won't boot below this voltage (mV)
+// Runtime low-voltage cutoff (millivolts): protective SYSTEMOFF while running
+// on battery, so the pack isn't deep-discharged to brownout before the boot
+// lock can catch it. Slightly below BOOTLOCK so a fresh boot at 3.3V isn't
+// immediately re-shutdown by normal load sag. 0 = disabled.
+#define PWRMGT_VOLTAGE_RUNTIME  3250
+
+// Load-shed thresholds (millivolts, uart_uplink build only): on battery, the
+// nRF52 tells the RAK2305 observer to drop WiFi when the pack falls below SHED,
+// shedding the biggest load so the node keeps repeating far longer, and so the
+// ESP goes down cleanly instead of brownout-wedging. WiFi is restored when the
+// pack recovers past RESTORE. The gap between them is hysteresis (prevents WiFi
+// flapping around the threshold). Both sit ABOVE the runtime cutoff so the
+// observer sheds well before the whole node parks. 0 = disabled.
+#define LOADSHED_VOLTAGE_SHED     3400
+#define LOADSHED_VOLTAGE_RESTORE  3650
 // LPCOMP wake configuration (voltage recovery from SYSTEMOFF)
 // AIN3 = P0.05 = PIN_A0 / PIN_VBAT_READ
 #define PWRMGT_LPCOMP_AIN 3
