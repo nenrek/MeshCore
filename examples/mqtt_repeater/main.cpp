@@ -110,6 +110,9 @@ void setup() {
   mqtt.setRTC(&rtc_clock);
   mqtt.setNodeName(the_mesh.getNodeName());
   mqtt.setPubKey(the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  { uint8_t prv[PRV_KEY_SIZE];                              // for UART_UPLINK identity push (one device)
+    int n = the_mesh.self_id.writeTo(prv, PRV_KEY_SIZE);
+    mqtt.setPrivKey(prv, n); }
   // Snapshot the configured LoRa params for the /status "radio" field.
   { NodePrefs* pr = the_mesh.getNodePrefs();
     if (pr) mqtt.setRadio(pr->freq, pr->bw, pr->sf, pr->cr); }
@@ -279,6 +282,60 @@ void loop() {
       } else {
         Serial.println("  -> bad baud");
       }
+    } else if (strcmp(command, "rxscan") == 0) {
+      // DIAGNOSTIC: find which nRF52 pin the ESP32's UART TX (the MCRSP relay
+      // reply) lands on. Data TX is fixed at P0.16 (so the ESP32 still receives
+      // the MCCMD); we sweep each candidate as RXD and print whatever comes back.
+      // The pin that returns "MCRSP..." is the real relay return wire.
+      static const uint8_t rxc[] = {15,18,19,20,22,23,24,25,27,33,37,38,39,40,41,42,46,47};
+      static uint8_t rxbuf[96];
+      static char txb[16];
+      strcpy(txb, "MCCMD ver\r\n");
+      const uint8_t TXPIN = PIN_SERIAL1_TX;   // P0.16, the working data-out line
+      Serial.println("  -> rxscan: TX=P0.16, sending 'MCCMD ver', sweeping RX candidates...");
+      Serial1.end();
+      int hits = 0;
+      for (unsigned i = 0; i < sizeof(rxc); i++) {
+        uint8_t rx = rxc[i];
+        if (rx == TXPIN) continue;
+        NRF_UARTE1->ENABLE = 0;
+        NRF_UARTE1->PSEL.TXD = TXPIN;
+        NRF_UARTE1->PSEL.RXD = rx;
+        NRF_UARTE1->PSEL.RTS = 0xFFFFFFFF;
+        NRF_UARTE1->PSEL.CTS = 0xFFFFFFFF;
+        NRF_UARTE1->BAUDRATE = UARTE_BAUDRATE_BAUDRATE_Baud115200;
+        NRF_UARTE1->CONFIG = 0;
+        NRF_UARTE1->EVENTS_ENDTX = 0;
+        NRF_UARTE1->EVENTS_ENDRX = 0;
+        NRF_UARTE1->EVENTS_RXTO = 0;
+        NRF_UARTE1->ENABLE = 8;
+        NRF_UARTE1->RXD.PTR = (uint32_t)rxbuf;
+        NRF_UARTE1->RXD.MAXCNT = sizeof(rxbuf);
+        NRF_UARTE1->TASKS_STARTRX = 1;
+        NRF_UARTE1->TXD.PTR = (uint32_t)txb;
+        NRF_UARTE1->TXD.MAXCNT = 11;   // "MCCMD ver\r\n"
+        NRF_UARTE1->TASKS_STARTTX = 1;
+        unsigned long t0 = millis();
+        while (!NRF_UARTE1->EVENTS_ENDTX && millis() - t0 < 30) ;
+        delay(450);                    // reply window (ESP32 loop + handleCommand)
+        NRF_UARTE1->TASKS_STOPRX = 1;
+        t0 = millis();
+        while (!NRF_UARTE1->EVENTS_RXTO && !NRF_UARTE1->EVENTS_ENDRX && millis() - t0 < 30) ;
+        uint32_t n = NRF_UARTE1->RXD.AMOUNT;
+        NRF_UARTE1->ENABLE = 0;
+        if (n > 0) {
+          Serial.printf("  -> RX=%u (P%u.%02u): %lu bytes: ", rx, rx/32, rx%32, (unsigned long)n);
+          for (uint32_t k = 0; k < n && k < 64; k++) { char c=(char)rxbuf[k]; Serial.write((c>=32&&c<127)?c:'.'); }
+          Serial.println();
+          hits++;
+        }
+      }
+      NRF_UARTE1->PSEL.TXD = 0xFFFFFFFF;
+      NRF_UARTE1->PSEL.RXD = 0xFFFFFFFF;
+      if (!hits) Serial.println("  -> NO reply on any RX candidate (ESP32 not TXing MCRSP -> ESP32-side fix)");
+      Serial1.begin(MQTT_AT_BAUD);
+      mqtt.setStream(&Serial1);
+      strcpy(reply, hits ? "rxscan: see output" : "rxscan: no reply found");
     } else if (mqtt.handleCommand(command, reply)) {
       if (reply[0]) { Serial.print("  -> "); Serial.println(reply); }
     } else {
@@ -299,7 +356,12 @@ void loop() {
                   (int16_t)radio_driver.getNoiseFloor(),
                   (uint32_t)(the_mesh.getTotalAirTime() / 1000),
                   (uint32_t)(the_mesh.getReceiveAirTime() / 1000),
-                  radio_driver.getPacketsRecvErrors());
+                  radio_driver.getPacketsRecvErrors(),
+                  (uint32_t)the_mesh.getOutboundQueueLen(),
+                  (uint32_t)(millis() / 1000),
+                  the_mesh.getErrFlagsStat(),
+                  (uint32_t)(the_mesh.getNumSentFlood() + the_mesh.getNumSentDirect()),
+                  (uint32_t)(the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect()));
   }
 
   mqtt.loop();
@@ -308,6 +370,33 @@ void loop() {
   ui_task.loop();
 #endif
   rtc_clock.tick();
+
+#if defined(UART_UPLINK) && defined(LOADSHED_VOLTAGE_SHED)
+  // Load-shed state machine: on battery, tell the RAK2305 observer to drop WiFi
+  // when the pack falls below SHED (biggest load off the rail = node keeps
+  // repeating longer + ESP goes down cleanly), and to bring WiFi back once the
+  // pack recovers past RESTORE. The gap is hysteresis. External power = never shed.
+  static unsigned long next_shed_check = 20000;  // first check 20s after boot
+  static bool shed_active = false;
+  if (millis() >= next_shed_check) {
+    next_shed_check = millis() + 30000;
+    bool external = board.isExternalPowered();
+    uint16_t mv = board.getBattMilliVolts();
+    if (external) {
+      if (shed_active) { mqtt.sendEspCommand("net resume"); shed_active = false; }
+    } else if (!shed_active && mv > 1000 && mv < LOADSHED_VOLTAGE_SHED) {
+      mqtt.sendEspCommand("net shed"); shed_active = true;
+      MESH_DEBUG_PRINTLN("LOADSHED: batt %u mV < %u - observer WiFi shed", mv, (unsigned)LOADSHED_VOLTAGE_SHED);
+    } else if (shed_active && mv >= LOADSHED_VOLTAGE_RESTORE) {
+      mqtt.sendEspCommand("net resume"); shed_active = false;
+      MESH_DEBUG_PRINTLN("LOADSHED: batt %u mV >= %u - observer WiFi restored", mv, (unsigned)LOADSHED_VOLTAGE_RESTORE);
+    }
+  }
+#endif
+
+#ifdef NRF52_POWER_MANAGEMENT
+  board.loopPowerMgt();  // runtime low-voltage cutoff (battery only; does not return if triggered)
+#endif
 
   // NOTE: powersaving/sleep is intentionally omitted — the MQTT bridge needs the
   // CPU and UART continuously serviced, so this build stays awake.
