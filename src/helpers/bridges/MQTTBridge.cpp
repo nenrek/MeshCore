@@ -807,6 +807,26 @@ void MQTTBridge::initializeWiFiInTask() {
   // Initialize WiFi
   WiFi.mode(WIFI_STA);
 
+  // Advertise the node name as the DHCP hostname so the observer shows up in the
+  // router/DHCP client list as e.g. MESHWERKS_LC_R01 instead of a generic
+  // espressif-xxxx. Sanitize to RFC-1123 (letters/digits/'-' only; underscores
+  // and other chars -> '-') since some DHCP servers reject non-compliant names.
+  // Must be set after WIFI_STA mode and before WiFi.begin() on ESP32.
+  {
+    char hostname[32];
+    size_t hi = 0;
+    for (size_t i = 0; _origin[i] && hi < sizeof(hostname) - 1; i++) {
+      char c = _origin[i];
+      hostname[hi++] = ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9')) ? c : '-';
+    }
+    hostname[hi] = '\0';
+    if (hi > 0) {
+      WiFi.setHostname(hostname);
+      MQTT_DEBUG_PRINTLN("WiFi hostname: %s", hostname);
+    }
+  }
+
   // Enable automatic reconnection - ESP32 will handle reconnection automatically
   WiFi.setAutoReconnect(true);
   WiFi.setAutoConnect(true);
@@ -1851,6 +1871,19 @@ void MQTTBridge::publishStatusToSlot(int index) {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
+  // Companion-supplied real stats (split-radio nodes, e.g. RAK2305+nRF52) override
+  // the local dispatcher/queue/uptime blanks. noise/recv_err arrive via _radio.
+  if (_ext_stats_valid) {
+    if (_ext_stats.uptime_secs      >= 0) uptime_secs      = _ext_stats.uptime_secs;
+    if (_ext_stats.err_flags        >= 0) errors           = _ext_stats.err_flags;
+    if (_ext_stats.tx_air_secs      >= 0) tx_air_secs      = _ext_stats.tx_air_secs;
+    if (_ext_stats.rx_air_secs      >= 0) rx_air_secs      = _ext_stats.rx_air_secs;
+    if (_ext_stats.packets_sent     >= 0) packets_sent     = _ext_stats.packets_sent;
+    if (_ext_stats.packets_received >= 0) packets_received = _ext_stats.packets_received;
+  }
+  int queue_len = (_ext_stats_valid && _ext_stats.queue_len >= 0)
+                    ? _ext_stats.queue_len : _queue_count;
+
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
@@ -1858,7 +1891,7 @@ void MQTTBridge::publishStatusToSlot(int index) {
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, json_buffer, STATUS_JSON_BUFFER_SIZE,
-    battery_mv, uptime_secs, errors, _queue_count, noise_floor,
+    battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
     _prefs->disable_fwd ? "off" : "on"
@@ -1984,6 +2017,35 @@ void MQTTBridge::checkConfigurationMismatch() {
 }
 
 bool MQTTBridge::handleWiFiConnection(unsigned long now) {
+  // Load-shed gate: the nRF52 (owns the battery ADC) signals low battery over the
+  // UART link. Hold WiFi powered OFF to cut the observer's WiFi draw so the node
+  // keeps repeating (nRF-only) far longer, and so the ESP goes down cleanly
+  // instead of brownout-wedging at the hard cutoff. Released when the pack recovers.
+  if (_load_shed) {
+    if (WiFi.getMode() != WIFI_OFF) {
+      for (int i = 0; i < RUNTIME_MQTT_SLOTS; i++) {
+        if (_slots[i].client && _slots[i].connected) _slots[i].client->disconnect();
+      }
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      _last_wifi_status = WL_DISCONNECTED;
+      MQTT_DEBUG_PRINTLN("Load-shed: WiFi OFF (nRF52 signalled low battery)");
+    }
+    return false;
+  }
+  // Resuming from shed: the radio was powered down, so bring STA back and kick a
+  // fresh association; the normal reconnect logic below then takes over.
+  if (WiFi.getMode() == WIFI_OFF) {
+    MQTT_DEBUG_PRINTLN("Load-shed cleared: WiFi bringup");
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(_prefs->wifi_ssid, _prefs->wifi_password);
+    _wifi_disconnected_time = now;
+    _last_wifi_reconnect_attempt = now;
+    _wifi_reconnect_backoff_attempt = 0;
+    _last_wifi_status = WiFi.status();
+    return false;
+  }
+
   wl_status_t current_wifi_status = WiFi.status();
   bool transitioned_to_connected = false;
 
@@ -2564,6 +2626,19 @@ bool MQTTBridge::publishStatus() {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
+  // Companion-supplied real stats (split-radio nodes, e.g. RAK2305+nRF52) override
+  // the local dispatcher/queue/uptime blanks. noise/recv_err arrive via _radio.
+  if (_ext_stats_valid) {
+    if (_ext_stats.uptime_secs      >= 0) uptime_secs      = _ext_stats.uptime_secs;
+    if (_ext_stats.err_flags        >= 0) errors           = _ext_stats.err_flags;
+    if (_ext_stats.tx_air_secs      >= 0) tx_air_secs      = _ext_stats.tx_air_secs;
+    if (_ext_stats.rx_air_secs      >= 0) rx_air_secs      = _ext_stats.rx_air_secs;
+    if (_ext_stats.packets_sent     >= 0) packets_sent     = _ext_stats.packets_sent;
+    if (_ext_stats.packets_received >= 0) packets_received = _ext_stats.packets_received;
+  }
+  int queue_len = (_ext_stats_valid && _ext_stats.queue_len >= 0)
+                    ? _ext_stats.queue_len : _queue_count;
+
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
@@ -2571,7 +2646,7 @@ bool MQTTBridge::publishStatus() {
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, json_buffer, STATUS_JSON_BUFFER_SIZE,
-    battery_mv, uptime_secs, errors, _queue_count, noise_floor,
+    battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
     _prefs->disable_fwd ? "off" : "on"

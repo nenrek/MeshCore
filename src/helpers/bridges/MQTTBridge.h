@@ -55,6 +55,21 @@ class MeshSNMPAgent;  // Forward declaration
  * - Configure slots via: set mqtt1.preset <name>, set mqtt2.preset <name>, etc.
  * - Available presets: analyzer-us, analyzer-eu, meshmapper, custom, none
  */
+// External stats override: on split-radio nodes (e.g. RAK2305 ESP32 + companion
+// nRF52 over UART) the bridge's local dispatcher/queue/uptime don't reflect the
+// real radio. A variant can push the companion's real stats here so /status
+// reports them instead of the local blanks. Each field <0 (or <-900 for noise)
+// means "not supplied — use the local source". noise/recv_err come via the radio.
+struct MQTTExternalStats {
+  int uptime_secs      = -1;
+  int err_flags        = -1;
+  int queue_len        = -1;
+  int tx_air_secs      = -1;
+  int rx_air_secs      = -1;
+  int packets_sent     = -1;
+  int packets_received = -1;
+};
+
 class MQTTBridge : public BridgeBase {
 public:
   // Max NTP servers in a try-list: 1 custom primary + the built-in fallbacks.
@@ -184,6 +199,10 @@ private:
   bool _ntp_synced;
   bool _ntp_sync_pending;  // Flag to trigger NTP sync from loop() instead of event handler
   bool _slots_setup_done;  // Deferred: slots set up after NTP sync
+  // Load-shed: set by the nRF52 (which owns the battery ADC) over the UART link
+  // when the pack is low. While true the bridge holds WiFi OFF to cut the
+  // observer's draw so the node keeps repeating longer; cleared when recovered.
+  volatile bool _load_shed = false;
   // WiFi.onEvent() handler registered once and never removed by end(); the bridge
   // object is reused across restarts, so re-registering would leak handlers and
   // duplicate every connect/disconnect log line. Inline-initialised so it survives
@@ -315,6 +334,10 @@ private:
   mesh::MainBoard* _board;         // For battery voltage
   mesh::MillisecondClock* _ms;    // For uptime
 
+  // Optional companion-supplied stats (split-radio nodes); see MQTTExternalStats.
+  MQTTExternalStats _ext_stats;
+  bool _ext_stats_valid = false;
+
   // Topic building
   enum MQTTMessageType { MSG_STATUS, MSG_PACKETS, MSG_RAW };
   bool buildTopicForSlot(int index, MQTTMessageType type, char* topic_buf, size_t buf_size);
@@ -381,6 +404,10 @@ public:
   void begin() override;
   void end() override;
   void loop() override;
+
+  // Load-shed control (called from the CLI when the nRF52 signals low battery).
+  void setLoadShed(bool on) { _load_shed = on; }
+  bool isLoadShed() const { return _load_shed; }
   void onPacketReceived(mesh::Packet *packet) override;
   void sendPacket(mesh::Packet *packet) override;
 
@@ -470,6 +497,10 @@ public:
 
   void setStatsSources(mesh::Dispatcher* dispatcher, mesh::Radio* radio,
                        mesh::MainBoard* board, mesh::MillisecondClock* ms);
+
+  // Push companion-supplied real stats (split-radio nodes). Overrides the local
+  // dispatcher/queue/uptime sources in the /status message.
+  void setExternalStats(const MQTTExternalStats& s) { _ext_stats = s; _ext_stats_valid = true; }
 
 #ifdef WITH_SNMP
   void setSNMPAgent(MeshSNMPAgent* agent) { _snmp_agent = agent; }
