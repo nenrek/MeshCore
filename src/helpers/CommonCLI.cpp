@@ -2166,11 +2166,16 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
 #endif
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
   } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
-    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s pkts=%s rx=%s tx=%d int=%lum ka=%us gps=%s",
+    // user/origin are readable so a node's auth identity can be verified against another's;
+    // the password is never echoed — only whether one is set (pass=set/none).
+    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s user=%s pass=%s origin=%s pkts=%s rx=%s tx=%d int=%lum ka=%us gps=%s",
              _prefs->cellular_host, (unsigned)_prefs->cellular_port,
              _prefs->cellular_tls ? "on" : "off",
              _prefs->cellular_tls_verify ? "verify" : "noverify",
              _prefs->cellular_apn, _prefs->cellular_iata,
+             _prefs->cellular_user[0] ? _prefs->cellular_user : "-",
+             _prefs->cellular_pass[0] ? "set" : "none",
+             _prefs->cellular_origin[0] ? _prefs->cellular_origin : "-",
              _prefs->cellular_pkts_enabled ? "on" : "off",
              _prefs->cellular_rx_enabled ? "on" : "off",
              (int)_prefs->cellular_tx_enabled,
