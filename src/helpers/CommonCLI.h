@@ -128,6 +128,7 @@ struct NodePrefs { // persisted to file
 
   // Custom NTP server (MQTT observer); empty = built-in default primary (pool.ntp.org)
   char mqtt_ntp_server[64];
+  uint8_t wifi_tx_power;             // WiFi TX power in dBm (0 = firmware default); synced from /mqtt_prefs
 
   // Cellular (LTE-M / BG77 / RAK5860) settings — used by CellularMQTTBridge. Appended at
   // the end for binary-compatible upgrades. Self-contained: the mqtt_* fields live in a
@@ -228,6 +229,7 @@ struct MQTTPrefs {
   // --- Appended fields (added after initial 6-slot migration) ---
   uint8_t mqtt_rx_enabled;       // Enable RX packet uplinking (default: on)
   char mqtt_ntp_server[64];      // Custom NTP server; empty = pool.ntp.org
+  uint8_t wifi_tx_power;         // WiFi TX power in dBm (0 = firmware default; 2..20 -> nearest step)
 };
 
 // 3-slot MQTTPrefs layout — used for migrating from 3-slot to 6-slot format.

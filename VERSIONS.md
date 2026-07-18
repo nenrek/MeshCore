@@ -39,6 +39,7 @@ commit `1a2b3c` on upstream MeshCore v1.16.0.
 | rev | date | notes |
 |-----|------|-------|
 | 1 | 2026-07-15 | First versioned build. Native multi-broker (meshwerks + rflab + meshmapper JWT), MCSTA stats push from nRF52, DHCP hostname, load-shed hook. |
+| 2 | 2026-07-18 | Runtime `set wifi.txpower <dBm>` (0=default; 2-20 → nearest ESP32 step) + `get wifi.txpower`, so a weak node (e.g. LC) can be cranked to ~19.5 dBm over the mesh without reflashing. Persisted in /mqtt_prefs (appended field, migration-safe). |
 
 ### wroom — `WROOM_uplink_observer_TEMP` (bare ESP-WROOM-32, no PSRAM, 2 slots, OSH stopgap)
 | rev | date | notes |

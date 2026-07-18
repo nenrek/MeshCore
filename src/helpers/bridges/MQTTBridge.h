@@ -10,6 +10,23 @@
 #include "helpers/JWTHelper.h"
 #include "helpers/MQTTPresets.h"
 
+// Map a requested WiFi TX power (dBm) to the nearest supported ESP32 step at or below it.
+// Shared by the `set wifi.txpower` CLI and the bridge's on-connect apply. Callers treat a
+// stored value of 0 as "firmware default" and do NOT call this.
+static inline wifi_power_t mqttWifiPowerFromDbm(uint8_t dbm) {
+  if (dbm >= 19) return WIFI_POWER_19_5dBm;
+  if (dbm >= 18) return WIFI_POWER_18_5dBm;
+  if (dbm >= 17) return WIFI_POWER_17dBm;
+  if (dbm >= 15) return WIFI_POWER_15dBm;
+  if (dbm >= 13) return WIFI_POWER_13dBm;
+  if (dbm >= 11) return WIFI_POWER_11dBm;
+  if (dbm >= 8)  return WIFI_POWER_8_5dBm;
+  if (dbm >= 7)  return WIFI_POWER_7dBm;
+  if (dbm >= 5)  return WIFI_POWER_5dBm;
+  if (dbm >= 2)  return WIFI_POWER_2dBm;
+  return WIFI_POWER_MINUS_1dBm;
+}
+
 #ifdef WITH_SNMP
 class MeshSNMPAgent;  // Forward declaration
 #endif

@@ -2081,11 +2081,16 @@ bool MQTTBridge::handleWiFiConnection(unsigned long now) {
         ps_mode = WIFI_PS_NONE;  // default: no power save; eliminates DTIM wake latency on mains-powered bridges
       }
       esp_wifi_set_ps(ps_mode);
+      // WiFi TX power: runtime pref (dBm) if set, else the build default.
+      if (_prefs->wifi_tx_power != 0) {
+        WiFi.setTxPower(mqttWifiPowerFromDbm(_prefs->wifi_tx_power));
+      } else {
       #ifdef MQTT_WIFI_TX_POWER
-      WiFi.setTxPower(MQTT_WIFI_TX_POWER);
+        WiFi.setTxPower(MQTT_WIFI_TX_POWER);
       #else
-      WiFi.setTxPower(WIFI_POWER_11dBm);
+        WiFi.setTxPower(WIFI_POWER_11dBm);
       #endif
+      }
       #endif
     }
     if (s_wifi_connected_at == 0) {

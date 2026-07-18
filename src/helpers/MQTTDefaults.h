@@ -69,6 +69,7 @@ static inline void applyMQTTDefaults(MQTTPrefs* prefs) {
   prefs->mqtt_rx_enabled = 1;
   prefs->mqtt_status_interval = 300000;
   prefs->wifi_power_save = 1;
+  prefs->wifi_tx_power = 0;   // 0 = firmware default TX power (2..20 dBm to override)
 
   mqttDefaultSlotPreset(prefs->mqtt_slot_preset[0], sizeof(prefs->mqtt_slot_preset[0]),
                         MQTT_DEFAULT_SLOT1_PRESET);

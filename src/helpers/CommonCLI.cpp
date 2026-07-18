@@ -712,6 +712,7 @@ void CommonCLI::syncMQTTPrefsToNodePrefs() {
   StrHelper::strncpy(_prefs->wifi_ssid, _mqtt_prefs.wifi_ssid, sizeof(_prefs->wifi_ssid));
   StrHelper::strncpy(_prefs->wifi_password, _mqtt_prefs.wifi_password, sizeof(_prefs->wifi_password));
   _prefs->wifi_power_save = _mqtt_prefs.wifi_power_save;
+  _prefs->wifi_tx_power = _mqtt_prefs.wifi_tx_power;
   StrHelper::strncpy(_prefs->timezone_string, _mqtt_prefs.timezone_string, sizeof(_prefs->timezone_string));
   _prefs->timezone_offset = _mqtt_prefs.timezone_offset;
   // Slot-based fields
@@ -744,6 +745,7 @@ void CommonCLI::syncNodePrefsToMQTTPrefs() {
   StrHelper::strncpy(_mqtt_prefs.wifi_ssid, _prefs->wifi_ssid, sizeof(_mqtt_prefs.wifi_ssid));
   StrHelper::strncpy(_mqtt_prefs.wifi_password, _prefs->wifi_password, sizeof(_mqtt_prefs.wifi_password));
   _mqtt_prefs.wifi_power_save = _prefs->wifi_power_save;
+  _mqtt_prefs.wifi_tx_power = _prefs->wifi_tx_power;
   StrHelper::strncpy(_mqtt_prefs.timezone_string, _prefs->timezone_string, sizeof(_mqtt_prefs.timezone_string));
   _mqtt_prefs.timezone_offset = _prefs->timezone_offset;
   // Slot-based fields
@@ -1627,6 +1629,26 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
       sprintf(reply, "OK - saved as %s", ps_name);
 #endif
     }
+  } else if (memcmp(config, "wifi.txpower ", 13) == 0) {
+    int dbm = atoi(&config[13]);
+    if (dbm < 0 || dbm > 20) {
+      strcpy(reply, "Error: dBm must be 0-20 (0 = firmware default)");
+    } else {
+      _prefs->wifi_tx_power = (uint8_t)dbm;
+      savePrefs();
+#ifdef ESP_PLATFORM
+      if (dbm != 0 && WiFi.status() == WL_CONNECTED) {
+        WiFi.setTxPower(mqttWifiPowerFromDbm((uint8_t)dbm));
+        sprintf(reply, "OK - wifi tx power set to %ddBm", dbm);
+      } else if (dbm == 0) {
+        strcpy(reply, "OK - wifi tx power reset to default (applies on next WiFi connect)");
+      } else {
+        sprintf(reply, "OK - saved %ddBm (applies on next WiFi connect)", dbm);
+      }
+#else
+      sprintf(reply, "OK - saved %ddBm", dbm);
+#endif
+    }
   } else if (memcmp(config, "timezone ", 9) == 0) {
     StrHelper::strncpy(_prefs->timezone_string, &config[9], sizeof(_prefs->timezone_string));
     savePrefs();
@@ -2275,6 +2297,9 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       sprintf(reply, "??: %s", config);
     }
+  } else if (memcmp(config, "wifi.txpower", 12) == 0) {
+    if (_prefs->wifi_tx_power == 0) strcpy(reply, "> default");
+    else sprintf(reply, "> %ddBm", _prefs->wifi_tx_power);
   } else if (memcmp(config, "wifi.ssid", 9) == 0) {
     sprintf(reply, "> %s", _prefs->wifi_ssid);
   } else if (memcmp(config, "wifi.pwd", 8) == 0) {
