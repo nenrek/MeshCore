@@ -31,6 +31,7 @@ Example: `v1.16.0-mw.weather.2+g1a2b3c`.
 | rev | date | notes |
 |-----|------|-------|
 | 1 | 2026-07-15 | First versioned build. UART_UPLINK packet forwarding (MCPKT/MCSTA framing), load-shed, runtime LV cutoff. |
+| 2 | 2026-07-19 | Reliability: flag-gated nRF52 hardware watchdog (`set wdt on`, OFF by default, ~120s CRV, armed after bring-up) + flash-persisted `reboot_count` (survives the Adafruit bootloader that clears RESETREAS). `wdt test` bench hook; `ver` now reports `reboots=N wdt=armed/off`. Cellular-parity port (from cell `6763fef0`/`348b56cf`). NOT yet hardware-validated. |
 
 ### asset — `RAK_3401_asset_beacon_ble` (nRF52 RAK3401; anti-theft / asset locator)
 | rev | date | notes |

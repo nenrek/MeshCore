@@ -63,6 +63,8 @@ struct NodePrefs { // persisted to file
   uint8_t rx_boosted_gain; // power settings
   uint8_t path_hash_mode;   // which path mode to use when sending
   uint8_t loop_detect;
+  uint8_t wdt_enabled;   // hardware watchdog armed at boot (default 0 = OFF; `set wdt on`, effect next boot)
+  uint32_t reboot_count; // boots since flash (flash-persisted; survives the Adafruit bootloader)
 };
 
 class CommonCLICallbacks {
