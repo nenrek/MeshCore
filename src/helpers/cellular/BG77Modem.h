@@ -184,6 +184,7 @@ private:
   unsigned long _last_poll   = 0;
   unsigned long _backoff_until = 0;
   uint8_t  _backoff_step = 0;
+  uint16_t _fail_cycles = 0;   // consecutive failed bring-ups; escalates to a modem soft-reset
 
   // non-blocking tick engine state
   bool     _at_active    = false;   // an AT command is in flight (sent, awaiting expect)

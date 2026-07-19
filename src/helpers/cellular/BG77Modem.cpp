@@ -360,6 +360,7 @@ void BG77Modem::enterBackoff(const char* why) {
   // Cap the backoff at 120 s (step 4) rather than 300 s: a weak-signal node needs to keep
   // probing so it catches brief good-signal windows instead of sitting idle for 5 min.
   _backoff_step = (_backoff_step < 4) ? _backoff_step + 1 : 4;
+  _fail_cycles++;              // reset on a successful connect; escalates to a modem soft-reset
   static const uint32_t table[] = {5000, 15000, 30000, 60000, 120000};
   _backoff_until = millis() + table[_backoff_step];
   _state = ST_BACKOFF;
@@ -440,7 +441,7 @@ void BG77Modem::loop() {
         else if (r == AT_FAIL) enterBackoff("tls setup failed");
       } else {                           // socket open + MQTT connect
         AtRes r = openConnectTick();
-        if (r == AT_OK) { _backoff_step = 0; enterState(ST_READY); _last_poll = millis(); }
+        if (r == AT_OK) { _backoff_step = 0; _fail_cycles = 0; enterState(ST_READY); _last_poll = millis(); }
         else if (r == AT_FAIL) enterBackoff("mqtt connect failed");
       }
       break;
@@ -454,7 +455,20 @@ void BG77Modem::loop() {
     }
 
     case ST_BACKOFF:
-      if ((long)(millis() - _backoff_until) >= 0) enterState(ST_INIT);  // modem stays powered
+      if ((long)(millis() - _backoff_until) >= 0) {
+        // After several failed bring-ups, soft-reset the modem to clear a wedged registration /
+        // network state (a case the node-level watchdog can't catch — the loop keeps running,
+        // only the modem is stuck). AT+CFUN=1,1 resets + re-registers (~10-30s); then re-probe
+        // from ST_POWERING. Best-effort, one-off per escalation. Normal operation never hits this.
+        if (_fail_cycles >= 6) {
+          _fail_cycles = 0;
+          if (_dbg) _dbg->println("[BG77] escalate: AT+CFUN=1,1 modem reset");
+          sendExpect("AT+CFUN=1,1", "OK", T_CFG);
+          enterState(ST_POWERING);
+        } else {
+          enterState(ST_INIT);  // modem stays powered
+        }
+      }
       break;
 
     case ST_GNSS_HOLD:
