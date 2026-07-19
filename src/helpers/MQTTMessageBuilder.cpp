@@ -51,7 +51,9 @@ int MQTTMessageBuilder::buildStatusMessage(
   int internal_heap,
   int packets_sent,
   int packets_received,
-  const char* repeat
+  const char* repeat,
+  const char* reboot_reason,
+  int reboot_count
 ) {
   // doc is provided by the caller (heap-allocated DynamicJsonDocument in MQTTBridge),
   // keeping this 768-byte scratch space off the MQTT task stack.
@@ -73,8 +75,15 @@ int MQTTMessageBuilder::buildStatusMessage(
   // Add stats object if any stats are provided
   if (battery_mv >= 0 || uptime_secs >= 0 || errors >= 0 || queue_len >= 0 ||
       noise_floor > -999 || tx_air_secs >= 0 || rx_air_secs >= 0 || recv_errors >= 0 ||
-      internal_heap >= 0 || packets_sent >= 0 || packets_received >= 0) {
+      internal_heap >= 0 || packets_sent >= 0 || packets_received >= 0 ||
+      (reboot_reason && reboot_reason[0]) || reboot_count >= 0) {
     JsonObject stats = root.createNestedObject("stats");
+    if (reboot_reason && reboot_reason[0]) {
+      stats["reboot_reason"] = reboot_reason;
+    }
+    if (reboot_count >= 0) {
+      stats["reboot_count"] = reboot_count;
+    }
     
     if (battery_mv >= 0) {
       stats["battery_mv"] = battery_mv;

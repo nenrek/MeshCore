@@ -262,6 +262,31 @@ void CellularMQTTBridge::buildAndQueuePacket(mesh::Packet* packet, bool is_tx, f
 
 // ---- status ---------------------------------------------------------------
 
+// Reboot / health diagnostics (nRF52). Function-local statics = one instance; the counter lives
+// in .noinit so it survives resets and clears on a real power-cycle (magic-validated). Reads the
+// RESETREAS register once (write-1-to-clear) so the next boot's reason is fresh.
+static void rebootDiag(const char** reason, int* count) {
+  static uint32_t magic __attribute__((section(".noinit"), used));
+  static uint32_t cnt   __attribute__((section(".noinit"), used));
+  static const char* r = nullptr;
+  static bool done = false;
+  if (!done) {
+    done = true;
+    if (magic != 0xB007C0DEUL) { magic = 0xB007C0DEUL; cnt = 0; }   // cold power-on
+    cnt++;
+    uint32_t rr = NRF_POWER->RESETREAS;
+    NRF_POWER->RESETREAS = rr;                                       // write-1-to-clear
+    if      (rr & POWER_RESETREAS_DOG_Msk)      r = "wdt";
+    else if (rr & POWER_RESETREAS_LOCKUP_Msk)   r = "lockup";
+    else if (rr & POWER_RESETREAS_SREQ_Msk)     r = "soft";
+    else if (rr & POWER_RESETREAS_RESETPIN_Msk) r = "pin";
+    else if (rr & POWER_RESETREAS_OFF_Msk)      r = "wake";
+    else if (rr == 0)                            r = "power";        // POR/BOR incl. brownout
+    else                                         r = "other";
+  }
+  *reason = r; *count = (int)cnt;
+}
+
 void CellularMQTTBridge::buildAndQueueStatus() {
   resolveOrigin();
 
@@ -296,12 +321,16 @@ void CellularMQTTBridge::buildAndQueueStatus() {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
+  const char* reboot_reason = nullptr; int reboot_count = -1;
+  rebootDiag(&reboot_reason, &reboot_count);
+
   int len = MQTTMessageBuilder::buildStatusMessage(
     _json_doc, _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, _scratch, STATUS_BUF,
     battery_mv, uptime_secs, errors, /*queue_len*/ _q_count, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, /*internal_heap*/ -1,
-    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on");
+    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on",
+    reboot_reason, reboot_count);
 
   if (len <= 0) return;
   char topic[128];

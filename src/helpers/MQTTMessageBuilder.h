@@ -82,7 +82,9 @@ public:
     int internal_heap = -1,
     int packets_sent = -1,
     int packets_received = -1,
-    const char* repeat = nullptr
+    const char* repeat = nullptr,
+    const char* reboot_reason = nullptr,  // why the node last reset: power/wdt/soft/brownout/pin/lockup
+    int reboot_count = -1                 // resets since last power-on (< 0 = omit)
   );
 
   /**
