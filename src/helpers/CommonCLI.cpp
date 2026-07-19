@@ -211,6 +211,12 @@ void CommonCLI::loadPrefs(FILESYSTEM* fs) {
   // the shorter /mqtt_prefs file won't contain it, so it keeps the default value (1 = on)
   // set by setMQTTPrefsDefaults(). No explicit migration needed.
 #endif
+
+  // Count this boot (flash-persisted; survives the Adafruit bootloader, which clears RESETREAS
+  // and doesn't preserve .noinit). One flash write per boot is negligible; a node that writes
+  // this often is a reboot-looper — exactly what the counter is meant to surface.
+  _prefs->reboot_count++;
+  savePrefs(fs);
 }
 
 void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
@@ -365,6 +371,9 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     }
     if (file.available() >= (int)sizeof(_prefs->wdt_enabled)) {
       file.read((uint8_t *)&_prefs->wdt_enabled, sizeof(_prefs->wdt_enabled));
+    }
+    if (file.available() >= (int)sizeof(_prefs->reboot_count)) {
+      file.read((uint8_t *)&_prefs->reboot_count, sizeof(_prefs->reboot_count));
     }
     _prefs->cellular_host[sizeof(_prefs->cellular_host) - 1] = '\0';
     _prefs->cellular_user[sizeof(_prefs->cellular_user) - 1] = '\0';
@@ -532,6 +541,7 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
     file.write((uint8_t *)&_prefs->cellular_keepalive, sizeof(_prefs->cellular_keepalive));
     file.write((uint8_t *)&_prefs->wdt_enabled, sizeof(_prefs->wdt_enabled));
+    file.write((uint8_t *)&_prefs->reboot_count, sizeof(_prefs->reboot_count));
 #endif
 
     file.close();
@@ -801,6 +811,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       _board->powerOff();  // doesn't return
     } else if (memcmp(command, "reboot", 6) == 0) {
       _board->reboot();  // doesn't return
+    } else if (memcmp(command, "wdt test", 8) == 0) {
+      // Bench-only: deliberately hang the loop to prove the watchdog resets the node. Does
+      // nothing useful unless the WDT is armed (`set wdt on` + reboot) — then it resets ~120s.
+      Serial.println("wdt test: hanging the loop; if the WDT is armed the node resets in ~120s...");
+      while (true) { /* spin, never feed the WDT */ }
     } else if (memcmp(command, "clkreboot", 9) == 0) {
       // Reset clock
       getRTCClock()->setCurrentTime(1715770351);  // 15 May 2024, 8:50pm

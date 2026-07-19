@@ -321,8 +321,8 @@ void CellularMQTTBridge::buildAndQueueStatus() {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
-  const char* reboot_reason = nullptr; int reboot_count = -1;
-  rebootDiag(&reboot_reason, &reboot_count);
+  const char* reboot_reason = nullptr; int reboot_dummy = 0;
+  rebootDiag(&reboot_reason, &reboot_dummy);   // reason best-effort; count is flash-persisted
 
   int len = MQTTMessageBuilder::buildStatusMessage(
     _json_doc, _origin, origin_id, _board_model, _firmware_version, radio_info,
@@ -330,7 +330,7 @@ void CellularMQTTBridge::buildAndQueueStatus() {
     battery_mv, uptime_secs, errors, /*queue_len*/ _q_count, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, /*internal_heap*/ -1,
     packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on",
-    reboot_reason, reboot_count);
+    reboot_reason, (int)_prefs->reboot_count);
 
   if (len <= 0) return;
   char topic[128];
@@ -362,13 +362,13 @@ void CellularMQTTBridge::formatStatus(char* buf, size_t buf_size) {
     snprintf(gps, sizeof(gps), "%.5f,%.5f", _prefs->node_lat, _prefs->node_lon);
   else
     snprintf(gps, sizeof(gps), "%s", _prefs->cellular_gps_enabled ? "acq" : "off");
-  const char* rst = nullptr; int cnt = -1;
-  rebootDiag(&rst, &cnt);
-  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s rst=%s cnt=%d",
+  const char* rst = nullptr; int dummy = 0;
+  rebootDiag(&rst, &dummy);   // rebootDiag reason only (best-effort on nRF52); count is flash-persisted
+  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s rst=%s cnt=%lu",
            _modem.stateName(), _modem.ceregStat(), csq,
            _modem.isReady() ? "up" : "down", _q_count,
            (unsigned long)_published, (unsigned long)_dropped, _modem.lastError(),
-           _modem.lastPubResult(), gps, rst ? rst : "-", cnt);
+           _modem.lastPubResult(), gps, rst ? rst : "-", (unsigned long)_prefs->reboot_count);
 }
 
 void CellularMQTTBridge::onModemTime(void* ctx, uint32_t epoch) {

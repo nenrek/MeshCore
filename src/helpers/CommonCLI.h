@@ -152,6 +152,7 @@ struct NodePrefs { // persisted to file
   uint8_t  cellular_gps_enabled;     // BG77 GNSS self-location -> advert lat/lon (default 0)
   uint16_t cellular_keepalive;       // MQTT keepalive seconds (default 60; shorter = fresher on beacon)
   uint8_t  wdt_enabled;              // hardware watchdog armed at boot (default 0 = OFF; `set wdt on`)
+  uint32_t reboot_count;             // boots since flash (flash-persisted; survives the bootloader)
 };
 
 #ifdef WITH_MQTT_BRIDGE
