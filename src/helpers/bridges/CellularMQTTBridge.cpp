@@ -362,11 +362,13 @@ void CellularMQTTBridge::formatStatus(char* buf, size_t buf_size) {
     snprintf(gps, sizeof(gps), "%.5f,%.5f", _prefs->node_lat, _prefs->node_lon);
   else
     snprintf(gps, sizeof(gps), "%s", _prefs->cellular_gps_enabled ? "acq" : "off");
-  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s",
+  const char* rst = nullptr; int cnt = -1;
+  rebootDiag(&rst, &cnt);
+  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s rst=%s cnt=%d",
            _modem.stateName(), _modem.ceregStat(), csq,
            _modem.isReady() ? "up" : "down", _q_count,
            (unsigned long)_published, (unsigned long)_dropped, _modem.lastError(),
-           _modem.lastPubResult(), gps);
+           _modem.lastPubResult(), gps, rst ? rst : "-", cnt);
 }
 
 void CellularMQTTBridge::onModemTime(void* ctx, uint32_t epoch) {

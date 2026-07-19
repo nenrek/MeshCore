@@ -363,6 +363,9 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     if (file.available() >= (int)sizeof(_prefs->cellular_keepalive)) {
       file.read((uint8_t *)&_prefs->cellular_keepalive, sizeof(_prefs->cellular_keepalive));
     }
+    if (file.available() >= (int)sizeof(_prefs->wdt_enabled)) {
+      file.read((uint8_t *)&_prefs->wdt_enabled, sizeof(_prefs->wdt_enabled));
+    }
     _prefs->cellular_host[sizeof(_prefs->cellular_host) - 1] = '\0';
     _prefs->cellular_user[sizeof(_prefs->cellular_user) - 1] = '\0';
     _prefs->cellular_pass[sizeof(_prefs->cellular_pass) - 1] = '\0';
@@ -528,6 +531,7 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->cellular_status_interval, sizeof(_prefs->cellular_status_interval));
     file.write((uint8_t *)&_prefs->cellular_gps_enabled, sizeof(_prefs->cellular_gps_enabled));
     file.write((uint8_t *)&_prefs->cellular_keepalive, sizeof(_prefs->cellular_keepalive));
+    file.write((uint8_t *)&_prefs->wdt_enabled, sizeof(_prefs->wdt_enabled));
 #endif
 
     file.close();
@@ -1861,6 +1865,12 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "cell.gps ", 9) == 0) {
     _prefs->cellular_gps_enabled = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
     savePrefs(); strcpy(reply, "OK");   // read live by the bridge loop; no restart needed
+  } else if (memcmp(config, "wdt ", 4) == 0) {
+    // Hardware watchdog. OFF by default; the nRF52 WDT can't be stopped at runtime once armed,
+    // so arming takes effect on the NEXT reboot — forcing a conscious bench-soak before deploy.
+    _prefs->wdt_enabled = memcmp(&config[4], "on", 2) == 0 ? 1 : 0;
+    savePrefs();
+    sprintf(reply, "OK - watchdog %s (takes effect after reboot)", _prefs->wdt_enabled ? "ARMED" : "off");
   } else if (memcmp(config, "cell.keepalive ", 15) == 0) {
     uint32_t s = _atoi(&config[15]);
     if (s >= 10 && s <= 3600) {
@@ -2187,6 +2197,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %s", _prefs->bridge_secret);
 #endif
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (memcmp(config, "wdt", 3) == 0) {
+    sprintf(reply, "> %s", _prefs->wdt_enabled ? "armed" : "off");
   } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
     // user/origin are readable so a node's auth identity can be verified against another's;
     // the password is never echoed — only whether one is set (pass=set/none).

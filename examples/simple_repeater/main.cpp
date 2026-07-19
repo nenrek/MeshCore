@@ -27,6 +27,24 @@ static unsigned long userBtnDownAt = 0;
 #define USER_BTN_HOLD_OFF_MILLIS 1500
 #endif
 
+// Hardware watchdog (nRF52). OFF unless armed via `set wdt on` (persisted pref). The nRF52 WDT
+// can't be stopped once started, so it's only started at boot when the pref is set, and fed at
+// the top of loop(). ~120 s window (well over the longest legit blocking op, e.g. publish ~15 s).
+#if defined(NRF52_PLATFORM)
+static bool s_wdt_on = false;
+static void wdtStart() {
+  NRF_WDT->CONFIG = 0x01UL;                 // SLEEP=Run (bit0=1), HALT=Pause (bit3=0)
+  NRF_WDT->CRV    = (120UL * 32768UL) - 1;  // ~120 s at 32.768 kHz LFCLK
+  NRF_WDT->RREN   = 0x01UL;                 // enable reload register RR[0]
+  NRF_WDT->TASKS_START = 1;
+  s_wdt_on = true;
+}
+static inline void wdtFeed() { if (s_wdt_on) NRF_WDT->RR[0] = 0x6E524635UL; }  // reload magic
+#else
+static inline void wdtStart() {}
+static inline void wdtFeed() {}
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -95,6 +113,7 @@ void setup() {
   sensors.begin();
 
   the_mesh.begin(fs);
+  if (the_mesh.getNodePrefs()->wdt_enabled) wdtStart();  // armed only if `set wdt on` (bench-soak first)
 
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
@@ -109,6 +128,7 @@ void setup() {
 }
 
 void loop() {
+  wdtFeed();
   int len = strlen(command);
   while (Serial.available() && len < sizeof(command)-1) {
     char c = Serial.read();

@@ -151,6 +151,7 @@ struct NodePrefs { // persisted to file
   uint32_t cellular_status_interval; // /status publish interval in ms (default 300000)
   uint8_t  cellular_gps_enabled;     // BG77 GNSS self-location -> advert lat/lon (default 0)
   uint16_t cellular_keepalive;       // MQTT keepalive seconds (default 60; shorter = fresher on beacon)
+  uint8_t  wdt_enabled;              // hardware watchdog armed at boot (default 0 = OFF; `set wdt on`)
 };
 
 #ifdef WITH_MQTT_BRIDGE

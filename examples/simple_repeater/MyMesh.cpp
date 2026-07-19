@@ -990,6 +990,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.cellular_status_interval = 300000; // 5 minutes
   _prefs.cellular_gps_enabled = 0;          // GNSS self-location off until enabled
   _prefs.cellular_keepalive = 60;           // MQTT keepalive (s) — short so beacon stays fresh
+  _prefs.wdt_enabled = 0;                    // hardware watchdog OFF by default (arm via `set wdt on`)
 #endif
 
   // bridge defaults
