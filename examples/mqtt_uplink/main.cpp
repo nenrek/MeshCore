@@ -9,6 +9,9 @@
 #include <Mesh.h>
 
 #include "MyMesh.h"
+#if defined(ESP32)
+  #include "esp_task_wdt.h"   // flag-gated loop watchdog (`set wdt on`)
+#endif
 
 #ifdef DISPLAY_CLASS
   #include "UITask.h"
@@ -99,6 +102,20 @@ void setup() {
 
 #if ENABLE_ADVERT_ON_BOOT == 1
   the_mesh.sendSelfAdvertisement(16000, false);
+#endif
+
+#if defined(ESP32)
+  // Arm the loop watchdog only if turned on via `set wdt on` (persisted, OFF by default). The
+  // bridge's connect path can block ~20 s (DNS/TLS/retries), so bump the TWDT timeout well above
+  // that (60 s) — only a genuine hang (deadlock / infinite loop) then trips it. Once enabled the
+  // Arduino loopTask auto-feeds each loop() return; a hung loop() stops feeding -> panic-reboot,
+  // and the next boot reports esp_reset_reason() = "wdt" in the MQTT status.
+  { NodePrefs* pr = the_mesh.getNodePrefs();
+    if (pr && pr->wdt_enabled) {
+      esp_task_wdt_init(60, true);   // 60 s, panic on timeout (reconfigures the running TWDT)
+      enableLoopWDT();               // subscribe the loopTask to the TWDT
+    }
+  }
 #endif
 
   board.onBootComplete();

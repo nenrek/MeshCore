@@ -16,6 +16,8 @@
 #ifdef ESP_PLATFORM
 #include <esp_wifi.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>   // esp_reset_reason()
+#include <esp_attr.h>     // RTC_NOINIT_ATTR
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -171,6 +173,37 @@ static unsigned long s_wifi_connected_at = 0;
 // Last WiFi disconnect reason (from ESP-IDF event). Used for get wifi.status diagnostics.
 static uint8_t s_wifi_disconnect_reason = 0;
 static unsigned long s_wifi_disconnect_time = 0;
+
+// ESP32 reboot diagnostics for the MQTT status. esp_reset_reason() is reliable on ESP32 (unlike the
+// nRF52, whose RESETREAS the Adafruit bootloader clobbers). The boot COUNT lives in RTC slow RAM
+// (RTC_NOINIT_ATTR): it survives resets (SW/WDT/panic/brownout) and is lost on a real power-cycle, so
+// a magic word validates it — matching the cellular "resets since power-on" semantics.
+#ifdef ESP_PLATFORM
+RTC_NOINIT_ATTR static uint32_t s_boot_magic;
+RTC_NOINIT_ATTR static uint32_t s_boot_count;
+static void espRebootDiag(const char** reason, int* count) {
+  static const char* r = nullptr;
+  static bool done = false;
+  if (!done) {
+    done = true;
+    if (s_boot_magic != 0xB007C0DEUL) { s_boot_magic = 0xB007C0DEUL; s_boot_count = 0; }  // cold power-on: RTC RAM lost
+    s_boot_count++;
+    switch (esp_reset_reason()) {
+      case ESP_RST_POWERON:   r = "power";    break;
+      case ESP_RST_SW:        r = "soft";     break;
+      case ESP_RST_PANIC:     r = "panic";    break;
+      case ESP_RST_TASK_WDT:  r = "wdt";      break;
+      case ESP_RST_INT_WDT:   r = "wdt";      break;
+      case ESP_RST_WDT:       r = "wdt";      break;
+      case ESP_RST_BROWNOUT:  r = "brownout"; break;
+      case ESP_RST_DEEPSLEEP: r = "wake";     break;
+      case ESP_RST_EXT:       r = "pin";      break;
+      default:                r = "other";    break;
+    }
+  }
+  *reason = r; *count = (int)s_boot_count;
+}
+#endif
 
 #ifdef MQTT_MEMORY_DEBUG
 // #region agent log
@@ -1887,6 +1920,10 @@ void MQTTBridge::publishStatusToSlot(int index) {
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
+  // Why the ESP last reset + boot count (esp_reset_reason is reliable on ESP32).
+  const char* reboot_reason = nullptr; int reboot_count = -1;
+  espRebootDiag(&reboot_reason, &reboot_count);
+
   int len = MQTTMessageBuilder::buildStatusMessage(
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
@@ -1894,7 +1931,8 @@ void MQTTBridge::publishStatusToSlot(int index) {
     battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
-    _prefs->disable_fwd ? "off" : "on"
+    _prefs->disable_fwd ? "off" : "on",
+    reboot_reason, reboot_count
   );
 
   if (len > 0) {
@@ -2647,6 +2685,10 @@ bool MQTTBridge::publishStatus() {
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
+  // Why the ESP last reset + boot count (esp_reset_reason is reliable on ESP32).
+  const char* reboot_reason = nullptr; int reboot_count = -1;
+  espRebootDiag(&reboot_reason, &reboot_count);
+
   int len = MQTTMessageBuilder::buildStatusMessage(
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
@@ -2654,7 +2696,8 @@ bool MQTTBridge::publishStatus() {
     battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
-    _prefs->disable_fwd ? "off" : "on"
+    _prefs->disable_fwd ? "off" : "on",
+    reboot_reason, reboot_count
   );
 
   if (len > 0) {
