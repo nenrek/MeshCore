@@ -31,8 +31,10 @@ Convention: `get <key>` reads a value, `set <key> <value>` writes it. Passwords 
 
 | Command | Description |
 |---|---|
-| `ver` | Firmware version + build date — shows your `mw.<variant>.<rev>+g<hash>` |
+| `ver` | Firmware version + build date; nRF52 builds also show `reboots=N wdt=armed/off` |
 | `reboot` / `clkreboot` | Restart the node (`clkreboot` also re-syncs the clock) |
+| `set wdt <on\|off>` (or `set wdt` to query) | Hardware watchdog — OFF by default, **effect after reboot**; auto-resets a hung node. On the WiFi observer this is the **nRF52** WDT (use `esp set wdt` for the ESP). `uart.2`/`cell`/`wifiobs.3`+ |
+| `wdt test` | **Bench only:** deliberately hang the loop to prove the watchdog resets the node |
 | `advert` | Flood advert (announce to the whole mesh) |
 | `advert.zerohop` | Advert to direct neighbors only |
 | `get name` / `set name <name>` | Read / set the node name (`MESHWERKS_…`) |
@@ -63,7 +65,7 @@ More advanced radio/routing keys exist (`flood.max`, `agc.reset.interval`, `radi
 | Command | Description |
 |---|---|
 | `get cell` | Full config in one line (host, tls, apn, iata, **user**, **pass**, origin, toggles, keepalive, gps) |
-| `cell.status` | Live modem state: `modem= reg= csq= mqtt= pub= drop= err= gps=` — main health check |
+| `cell.status` | Live modem state: `modem= reg= csq= mqtt= pub= drop= err= gps= rst= cnt=` — main health check (`rst`/`cnt` = last reboot reason + count) |
 | `set cell.server <ip>` | Broker address — use the **IP** (SIM DNS is unreliable) |
 | `set cell.port <n>` | Broker port (8883 for mqtts) |
 | `set cell.user <user>` | MQTT username (`observer`) |
@@ -98,6 +100,8 @@ ESP32 side via the `esp` relay (flashed by web-OTA with the `wifiobs` .bin):
 | `esp get wifi.status` | Connection state, IP, RSSI, disconnect reason |
 | `esp set wifi.txpower <dBm>` / `esp get wifi.txpower` | **TX power** — 0 = default, 2–20 → nearest step (crank a weak node to `19`). *wifiobs.2+* |
 | `esp set wifi.powersave <none\|min\|max>` | WiFi power-save (`none` for best reception) |
+| `esp set wdt <on\|off>` (or `esp set wdt`) | Arm/disarm the **ESP32** loop watchdog (separate from the nRF52 `set wdt`; OFF by default, effect after reboot). Reboot reason + count also appear in the MQTT status. *wifiobs.3+* |
+| `esp wdt test` | **Bench only:** hang the ESP loop to prove its watchdog bites |
 | `esp set mqtt.iata <code>` / `esp set mqtt.origin <name>` | MQTT identity |
 | `esp set mqtt1.preset <custom\|rflab\|meshmapper>` | Slot 1 preset (also `mqtt2`, `mqtt3`) |
 | `esp set mqtt1.server/username/password <v>` | Custom-slot broker settings |
