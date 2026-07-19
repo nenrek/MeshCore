@@ -69,6 +69,8 @@ public:
   uint8_t loop_detect = 0;
   uint8_t cad_enabled = 0;      // hardware Channel Activity Detection before TX (boolean)
   uint8_t extra_sf[4];
+  uint8_t wdt_enabled = 0;   // hardware watchdog armed at boot (default 0 = OFF; `set wdt on`, effect next boot)
+  uint32_t reboot_count = 0; // boots since flash (flash-persisted; survives the Adafruit bootloader)
 
 private:
   class RadioPrefs : public ConfigSerializer {
@@ -180,6 +182,8 @@ protected:
     def("repeat", repeat);
     def("room", room);
     def("power", power);
+    def("wdt", wdt_enabled);        // reliability: watchdog armed at boot
+    def("reboot_cnt", reboot_count); // reliability: flash-persisted boot counter
   }
 
 public:

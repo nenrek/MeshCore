@@ -103,6 +103,8 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {  // Legacy 
     file.read((uint8_t *)&_prefs->radio_fem_rxgain, sizeof(_prefs->radio_fem_rxgain));             // 293
     file.read((uint8_t *)&_prefs->cad_enabled, sizeof(_prefs->cad_enabled));                       // 294
     // next: 295
+    // NOTE: wdt_enabled + reboot_count now persist via JSON prefs (ConfigSerializer), not this
+    // legacy binary loader — which remains only to migrate genuine pre-1.17 prefs files.
 
     // sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -183,6 +185,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       _board->powerOff();  // doesn't return
     } else if (memcmp(command, "reboot", 6) == 0) {
       _board->reboot();  // doesn't return
+    } else if (memcmp(command, "wdt test", 8) == 0) {
+      // Bench-only: deliberately hang the loop to prove the watchdog resets the node. Only
+      // meaningful once the WDT is armed (`set wdt on` + reboot); otherwise it just wedges.
+      Serial.println("wdt test: hanging the loop; if the WDT is armed the node resets in ~120s...");
+      while (1) { }  // no wdtFeed() here -> WDT (if armed) bites
     } else if (memcmp(command, "clkreboot", 9) == 0) {
       // Reset clock
       getRTCClock()->setCurrentTime(1715770351);  // 15 May 2024, 8:50pm
@@ -269,7 +276,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* re
       bool s = _callbacks->formatFileSystem();
       sprintf(reply, "File system erase: %s", s ? "OK" : "Err");
     } else if (memcmp(command, "ver", 3) == 0) {
-      sprintf(reply, "%s (Build: %s)", _callbacks->getFirmwareVer(), _callbacks->getBuildDate());
+      sprintf(reply, "%s (Build: %s) reboots=%lu wdt=%s", _callbacks->getFirmwareVer(),
+              _callbacks->getBuildDate(), (unsigned long)_prefs->reboot_count,
+              _prefs->wdt_enabled ? "armed" : "off");
     } else if (memcmp(command, "board", 5) == 0) {
       sprintf(reply, "%s", _board->getManufacturerName());
     } else if (memcmp(command, "sensor get ", 11) == 0) {
@@ -462,6 +471,14 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->airtime_factor = atof(&config[3]);
     savePrefs();
     strcpy(reply, "OK");
+  } else if (memcmp(config, "wdt ", 4) == 0) {
+    // Hardware watchdog arm/disarm. OFF by default; the nRF52 WDT can't be stopped once armed,
+    // so this takes effect on the NEXT boot (soak the build first, then `set wdt on` + reboot).
+    _prefs->wdt_enabled = memcmp(&config[4], "on", 2) == 0 ? 1 : 0;
+    savePrefs();
+    sprintf(reply, "OK - watchdog %s (takes effect after reboot)", _prefs->wdt_enabled ? "ARMED" : "off");
+  } else if (memcmp(config, "wdt", 3) == 0) {
+    sprintf(reply, "> %s", _prefs->wdt_enabled ? "armed" : "off");
   } else if (memcmp(config, "int.thresh ", 11) == 0) {
     _prefs->interference_threshold = atoi(&config[11]);
     savePrefs();

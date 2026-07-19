@@ -889,6 +889,8 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.flood_max_advert = 8;
   _prefs.interference_threshold = 0; // disabled
   _prefs.cad_enabled = 0;            // hardware CAD before TX (off by default; 'set cad on')
+  _prefs.wdt_enabled = 0;            // hardware watchdog OFF by default (arm via `set wdt on` after a soak)
+  _prefs.reboot_count = 0;           // flash-persisted boot counter
 
   // bridge defaults
   _prefs.bridge_enabled = 1;    // enabled
@@ -926,6 +928,10 @@ void MyMesh::begin(FILESYSTEM *fs) {
   _fs = fs;
   // load persisted prefs
   _cli.loadPrefs(_fs);
+  // Count this boot (flash-persisted). The Adafruit bootloader clears RESETREAS, so a runtime
+  // nRF52 reset-reason is unreliable — a persisted counter is the honest reboot signal.
+  _prefs.reboot_count++;
+  _cli.savePrefs(_fs);
   acl.load(_fs, self_id);
   // TODO: key_store.begin();
   region_map.load(_fs);

@@ -33,6 +33,24 @@ static char command[160];
 
 unsigned long POWERSAVING_FIRSTSLEEP_SECS = 120;
 
+// Flag-gated hardware watchdog (nRF52). OFF unless armed via `set wdt on` (persisted pref). The
+// nRF52 WDT cannot be stopped once started, so it is STARTed at boot only when armed — soak first.
+// CRV ~120 s; loop() must call wdtFeed() more often than that or the node resets.
+#if defined(NRF52_PLATFORM)
+static bool s_wdt_on = false;
+static void wdtStart() {
+  NRF_WDT->CONFIG = 0x01UL;                 // SLEEP=Run (bit0=1), HALT=Pause (bit3=0)
+  NRF_WDT->CRV    = (120UL * 32768UL) - 1;  // ~120 s at 32.768 kHz LFCLK
+  NRF_WDT->RREN   = 0x01UL;                 // enable reload register RR[0]
+  NRF_WDT->TASKS_START = 1;
+  s_wdt_on = true;
+}
+static inline void wdtFeed() { if (s_wdt_on) NRF_WDT->RR[0] = 0x6E524635UL; }  // reload magic
+#else
+static inline void wdtStart() {}
+static inline void wdtFeed() {}
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -129,10 +147,16 @@ void setup() {
   the_mesh.sendSelfAdvertisement(16000, false);
 #endif
 
+  // Arm the hardware watchdog only if turned on via `set wdt on` (persisted). Done last so the
+  // whole bring-up above is never watched — only the steady-state loop() must keep feeding it.
+  { NodePrefs* pr = the_mesh.getNodePrefs();
+    if (pr && pr->wdt_enabled) wdtStart(); }
+
   board.onBootComplete();
 }
 
 void loop() {
+  wdtFeed();  // keep the hardware watchdog fed (no-op unless armed via `set wdt on`)
   int len = strlen(command);
   while (Serial.available() && len < sizeof(command)-1) {
     char c = Serial.read();
