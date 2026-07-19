@@ -360,7 +360,11 @@ void BG77Modem::enterBackoff(const char* why) {
   // Cap the backoff at 120 s (step 4) rather than 300 s: a weak-signal node needs to keep
   // probing so it catches brief good-signal windows instead of sitting idle for 5 min.
   _backoff_step = (_backoff_step < 4) ? _backoff_step + 1 : 4;
-  _fail_cycles++;              // reset on a successful connect; escalates to a modem soft-reset
+  // Only accumulate toward the CFUN soft-reset when the modem is REGISTERED but still can't
+  // connect (a genuine wedge in the data/MQTT stage). With no coverage (reg 0/2) a CFUN reset
+  // can't conjure signal — it just restarts the search — so don't count those; reset the streak.
+  if (_registered) _fail_cycles++;
+  else             _fail_cycles = 0;
   static const uint32_t table[] = {5000, 15000, 30000, 60000, 120000};
   _backoff_until = millis() + table[_backoff_step];
   _state = ST_BACKOFF;
