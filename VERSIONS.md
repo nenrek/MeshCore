@@ -15,7 +15,14 @@ v<upstream>-<fleet>.<variant>.<rev>+g<githash>[.dirty]
         └─ upstream MeshCore base (bump when we rebase onto a new upstream release)
 ```
 
-Example: `v1.16.0-mw.weather.2+g1a2b3c`.
+Example: `v1.17.0-mw.weather.1+g1a2b3c`.
+
+## Upstream base
+
+| base | date | notes |
+|------|------|-------|
+| v1.16.0 | 2026-07-15 | Initial versioned fleet. |
+| **v1.17.0** | **2026-08-09** | Rebased all custom firmwares onto `repeater-v1.17.0`. Adapted to three 1.17 API changes (UITask `(board,display)` ctor, MeshTables `wasSeen`/`markSeen` split, `UIColor` semantic palette). Companion prefs now JSON `ConfigSerializer` (`/prefs.json`) — asset-beacon `ab_*` fields ported to an `AssetBeaconPrefs` group; legacy binary `/new_prefs` still migrated on first boot. Upstream added official RAK13800 Ethernet (SPI1 pins 29/30/3 — same split the weather node uses). |
 
 ## How it works
 
