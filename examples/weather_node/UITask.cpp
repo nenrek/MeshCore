@@ -44,12 +44,12 @@ static void abbreviateZones(const char* zones, char* out, int out_size) {
 }
 
 // Determine alert color from header string (e.g. "[Severe] Winter Storm Warning")
-static DisplayDriver::Color alertColor(const char* header) {
-  if (!header || !header[0])            return DisplayDriver::LIGHT;
-  if (strstr(header, "Extreme"))        return DisplayDriver::RED;
-  if (strstr(header, "Severe"))         return DisplayDriver::YELLOW;
-  if (strstr(header, "Test"))           return DisplayDriver::BLUE;
-  return DisplayDriver::LIGHT;
+static ColorVal alertColor(const char* header) {
+  if (!header || !header[0])            return UIColor::primary_txt;
+  if (strstr(header, "Extreme"))        return UIColor::warning_txt;
+  if (strstr(header, "Severe"))         return UIColor::warning_txt;
+  if (strstr(header, "Test"))           return UIColor::corp_blue;
+  return UIColor::primary_txt;
 }
 
 void UITask::begin(NodePrefs* node_prefs, NWSDisplayData* nws_data,
@@ -75,14 +75,14 @@ void UITask::begin(NodePrefs* node_prefs, NWSDisplayData* nws_data,
 void UITask::renderBootScreen() {
   int cx = _display->width() / 2;
 
-  _display->setColor(DisplayDriver::BLUE);
+  _display->setColor(UIColor::corp_blue);
   _display->drawXbm(((_display->width() - 128) / 2), 3, meshcore_logo, 128, 13);
 
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   _display->setTextSize(1);
   _display->drawTextCentered(cx, 22, _version_info);
 
-  _display->setColor(DisplayDriver::YELLOW);
+  _display->setColor(UIColor::warning_txt);
   _display->drawTextCentered(cx, 35, "< NWS Weather Node >");
 }
 
@@ -99,16 +99,16 @@ void UITask::renderHomeScreen() {
   _display->setTextSize(1);
 
   // ── Line 1: node name ──────────────────────────────────────────────
-  _display->setColor(DisplayDriver::GREEN);
+  _display->setColor(UIColor::primary_txt);
   const char* name = (_node_prefs->node_name[0]) ? _node_prefs->node_name : "NWS Alerts";
   _display->drawTextEllipsized(0, L1, W, name);
 
   // thin divider
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   _display->fillRect(0, L1 + 9, W, 1);
 
   // ── Line 2: ETH status + zone ──────────────────────────────────────
-  _display->setColor(DisplayDriver::YELLOW);
+  _display->setColor(UIColor::warning_txt);
   char zone_abbr[24];
   abbreviateZones(_nws_data->zone, zone_abbr, sizeof(zone_abbr));
   char line2[32];
@@ -117,7 +117,7 @@ void UITask::renderHomeScreen() {
   _display->drawTextEllipsized(0, L2, W, line2);
 
   // ── Line 3: poll + alert counts ───────────────────────────────────
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   char line3[32];
   snprintf(line3, sizeof(line3), "Polls:%lu  Alerts:%lu",
     (unsigned long)_nws_data->polls_total,
@@ -129,7 +129,7 @@ void UITask::renderHomeScreen() {
     _display->setColor(alertColor(_nws_data->last_header));
     _display->drawTextEllipsized(0, L4, W, _nws_data->last_header);
   } else {
-    _display->setColor(DisplayDriver::LIGHT);
+    _display->setColor(UIColor::primary_txt);
     _display->setCursor(0, L4);
     _display->print("No alerts yet");
   }
@@ -139,13 +139,13 @@ void UITask::renderHomeScreen() {
     char line5[32];
     snprintf(line5, sizeof(line5), "UK:%s  %s",
       _nws_data->uk_last_ok ? "OK" : "FAIL", _nws_data->uk_host);
-    _display->setColor(_nws_data->uk_last_ok ? DisplayDriver::GREEN : DisplayDriver::RED);
+    _display->setColor(_nws_data->uk_last_ok ? UIColor::primary_txt : UIColor::warning_txt);
     _display->drawTextEllipsized(0, L5, W, line5);
   } else {
     char line5[32];
     snprintf(line5, sizeof(line5), "%06.3f SF%d BW%.1f",
       _node_prefs->freq, _node_prefs->sf, _node_prefs->bw);
-    _display->setColor(DisplayDriver::YELLOW);
+    _display->setColor(UIColor::warning_txt);
     _display->setCursor(0, L5);
     _display->print(line5);
   }
@@ -164,22 +164,22 @@ void UITask::renderInfoScreen() {
   _display->setTextSize(1);
 
   // ── Line 1: node name ──────────────────────────────────────────────
-  _display->setColor(DisplayDriver::GREEN);
+  _display->setColor(UIColor::primary_txt);
   const char* name = (_node_prefs->node_name[0]) ? _node_prefs->node_name : "NWS Alerts";
   _display->drawTextEllipsized(0, L1, W, name);
 
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   _display->fillRect(0, L1 + 9, W, 1);
 
   // ── Line 2: LoRa params ────────────────────────────────────────────
-  _display->setColor(DisplayDriver::YELLOW);
+  _display->setColor(UIColor::warning_txt);
   char line2[32];
   snprintf(line2, sizeof(line2), "%06.3f SF%d BW%.0f",
     _node_prefs->freq, _node_prefs->sf, _node_prefs->bw);
   _display->drawTextEllipsized(0, L2, W, line2);
 
   // ── Line 3: active alerts + zone ──────────────────────────────────
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   char zone_abbr[24];
   abbreviateZones(_nws_data->zone, zone_abbr, sizeof(zone_abbr));
   char line3[32];
@@ -188,7 +188,7 @@ void UITask::renderInfoScreen() {
   _display->drawTextEllipsized(0, L3, W, line3);
 
   // ── Line 4: uptime ────────────────────────────────────────────────
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   unsigned long up = millis() / 1000;
   char line4[32];
   snprintf(line4, sizeof(line4), "Up: %lud %02luh %02lum",
@@ -196,15 +196,15 @@ void UITask::renderInfoScreen() {
   _display->drawTextEllipsized(0, L4, W, line4);
 
   // ── Line 5: UK or poll interval ───────────────────────────────────
-  _display->setColor(DisplayDriver::LIGHT);
+  _display->setColor(UIColor::primary_txt);
   if (_nws_data->uk_enabled) {
     char line5[32];
     snprintf(line5, sizeof(line5), "UK:%s  %s",
       _nws_data->uk_last_ok ? "OK" : "FAIL", _nws_data->uk_host);
-    _display->setColor(_nws_data->uk_last_ok ? DisplayDriver::GREEN : DisplayDriver::RED);
+    _display->setColor(_nws_data->uk_last_ok ? UIColor::primary_txt : UIColor::warning_txt);
     _display->drawTextEllipsized(0, L5, W, line5);
   } else {
-    _display->setColor(DisplayDriver::LIGHT);
+    _display->setColor(UIColor::primary_txt);
     _display->setCursor(0, L5);
     _display->print("UK: disabled");
   }
