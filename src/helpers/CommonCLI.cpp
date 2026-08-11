@@ -1438,6 +1438,74 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     savePrefs();
     strcpy(reply, "OK");
 #endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (memcmp(config, "cell.server ", 12) == 0) {
+    StrHelper::strncpy(_prefs->cellular_host, &config[12], sizeof(_prefs->cellular_host));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.port ", 10) == 0) {
+    _prefs->cellular_port = (uint16_t)_atoi(&config[10]);
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.user ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_user, &config[10], sizeof(_prefs->cellular_user));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.pass ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_pass, &config[10], sizeof(_prefs->cellular_pass));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.iata ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_iata, &config[10], sizeof(_prefs->cellular_iata));
+    for (int i = 0; _prefs->cellular_iata[i]; i++) _prefs->cellular_iata[i] = toupper(_prefs->cellular_iata[i]);
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.origin ", 12) == 0) {
+    StrHelper::strncpy(_prefs->cellular_origin, &config[12], sizeof(_prefs->cellular_origin));
+    StrHelper::stripSurroundingQuotes(_prefs->cellular_origin, sizeof(_prefs->cellular_origin));
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.apn ", 9) == 0) {
+    StrHelper::strncpy(_prefs->cellular_apn, &config[9], sizeof(_prefs->cellular_apn));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.band ", 10) == 0) {
+    StrHelper::strncpy(_prefs->cellular_band, &config[10], sizeof(_prefs->cellular_band));
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tls.verify ", 16) == 0) {
+    _prefs->cellular_tls_verify = memcmp(&config[16], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tls ", 9) == 0) {
+    _prefs->cellular_tls = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.packets ", 13) == 0) {
+    _prefs->cellular_pkts_enabled = memcmp(&config[13], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.rx ", 8) == 0) {
+    _prefs->cellular_rx_enabled = memcmp(&config[8], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.status ", 12) == 0) {
+    _prefs->cellular_status_enabled = memcmp(&config[12], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.tx ", 8) == 0) {
+    if (memcmp(&config[8], "advert", 6) == 0) _prefs->cellular_tx_enabled = 2;
+    else _prefs->cellular_tx_enabled = memcmp(&config[8], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.gps ", 9) == 0) {
+    _prefs->cellular_gps_enabled = memcmp(&config[9], "on", 2) == 0 ? 1 : 0;
+    savePrefs(); strcpy(reply, "OK");   // read live by the bridge loop; no restart needed
+  } else if (memcmp(config, "cell.keepalive ", 15) == 0) {
+    uint32_t s = _atoi(&config[15]);
+    if (s >= 10 && s <= 3600) {
+      _prefs->cellular_keepalive = (uint16_t)s;
+      savePrefs(); _callbacks->restartBridge();   // re-applied to the modem on reconnect
+      sprintf(reply, "OK - keepalive %lus", (unsigned long)s);
+    } else {
+      strcpy(reply, "Error: keepalive must be 10-3600 seconds");
+    }
+  } else if (memcmp(config, "cell.interval ", 14) == 0) {
+    uint32_t m = _atoi(&config[14]);
+    if (m >= 1 && m <= 60) {
+      _prefs->cellular_status_interval = m * 60000;
+      savePrefs(); _callbacks->restartBridge();
+      sprintf(reply, "OK - status interval %lu min", (unsigned long)m);
+    } else {
+      strcpy(reply, "Error: interval must be 1-60 minutes");
+    }
+#endif
   } else if (memcmp(config, "adc.multiplier ", 15) == 0) {
     _prefs->adc_multiplier = atof(&config[15]);
     if (_board->setAdcMultiplier(_prefs->adc_multiplier)) {
@@ -1489,6 +1557,25 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
     sprintf(reply, "> %d.%d%%", dc_int, dc_frac);
   } else if (memcmp(config, "af", 2) == 0) {
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->airtime_factor));
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
+    // user/origin are readable so a node's auth identity can be verified against another's;
+    // the password is never echoed — only whether one is set (pass=set/none).
+    snprintf(reply, 160, "> host=%s:%u tls=%s/%s apn=%s iata=%s user=%s pass=%s origin=%s pkts=%s rx=%s tx=%d int=%lum ka=%us gps=%s",
+             _prefs->cellular_host, (unsigned)_prefs->cellular_port,
+             _prefs->cellular_tls ? "on" : "off",
+             _prefs->cellular_tls_verify ? "verify" : "noverify",
+             _prefs->cellular_apn, _prefs->cellular_iata,
+             _prefs->cellular_user[0] ? _prefs->cellular_user : "-",
+             _prefs->cellular_pass[0] ? "set" : "none",
+             _prefs->cellular_origin[0] ? _prefs->cellular_origin : "-",
+             _prefs->cellular_pkts_enabled ? "on" : "off",
+             _prefs->cellular_rx_enabled ? "on" : "off",
+             (int)_prefs->cellular_tx_enabled,
+             (unsigned long)(_prefs->cellular_status_interval / 60000),
+             (unsigned)(_prefs->cellular_keepalive ? _prefs->cellular_keepalive : 60),
+             _prefs->cellular_gps_enabled ? "on" : "off");
+#endif
   } else if (memcmp(config, "int.thresh", 10) == 0) {
     sprintf(reply, "> %d", (uint32_t) _prefs->interference_threshold);
   } else if (memcmp(config, "cad", 3) == 0) {
