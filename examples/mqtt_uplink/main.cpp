@@ -104,19 +104,8 @@ void setup() {
   the_mesh.sendSelfAdvertisement(16000, false);
 #endif
 
-#if defined(ESP32)
-  // Arm the loop watchdog only if turned on via `set wdt on` (persisted, OFF by default). The
-  // bridge's connect path can block ~20 s (DNS/TLS/retries), so bump the TWDT timeout well above
-  // that (60 s) — only a genuine hang (deadlock / infinite loop) then trips it. Once enabled the
-  // Arduino loopTask auto-feeds each loop() return; a hung loop() stops feeding -> panic-reboot,
-  // and the next boot reports esp_reset_reason() = "wdt" in the MQTT status.
-  { NodePrefs* pr = the_mesh.getNodePrefs();
-    if (pr && pr->wdt_enabled) {
-      esp_task_wdt_init(60, true);   // 60 s, panic on timeout (reconfigures the running TWDT)
-      enableLoopWDT();               // subscribe the loopTask to the TWDT
-    }
-  }
-#endif
+  // NOTE: our old ESP loop-watchdog (`set wdt on`) was dropped on the 1.17 rebase —
+  // agessaman's observer-firmware provides its own `radio.watchdog` + ExternalWatchdogManager.
 
   board.onBootComplete();
 }
@@ -188,15 +177,15 @@ void loop() {
     }
   }
 
-  // Node name from the nRF52. Set BOTH node_name (used in the ADVERT, which is
-  // what the maps display) and mqtt_origin (the /status field) so the observer
-  // shows as the node's name everywhere — one device.
+  // Node name from the nRF52 -> node_name (used in the ADVERT the maps display).
+  // The /status origin field is derived by their bridge via getEffectiveMqttOrigin(),
+  // which falls back to node_name when mqtt_origin (now in MQTTPrefs) is empty — so
+  // setting node_name alone shows the observer as the node's name everywhere.
   if (radio_driver.hasName()) {
     char nm[32]; radio_driver.takeName(nm, sizeof(nm));
     NodePrefs* pr = the_mesh.getNodePrefs();
     if (pr) {
       strncpy(pr->node_name,   nm, sizeof(pr->node_name)   - 1); pr->node_name[sizeof(pr->node_name)   - 1] = 0;
-      strncpy(pr->mqtt_origin, nm, sizeof(pr->mqtt_origin) - 1); pr->mqtt_origin[sizeof(pr->mqtt_origin) - 1] = 0;
     }
   }
 
@@ -205,22 +194,16 @@ void loop() {
     board.setBattMilliVolts(radio_driver.takeBatt());
   }
 
-  // Full radio/mesh stats snapshot from the nRF52 (MCSTA) -> the bridge /status,
-  // so airtime/queue/uptime/errors/packet-counts report the REAL nRF52 values
-  // instead of this radio-less ESP32's blanks. (noise floor + recv errors flow
-  // through UartRadio's getNoiseFloor()/getPacketsRecvErrors() overrides.)
+  // TODO(1.17): companion-stats override — feed the nRF52's real radio/mesh stats
+  // (MCSTA: airtime/queue/uptime/errors/packet-counts) into the bridge /status so a
+  // radio-less ESP32 reports the REAL values, not its own blanks. agessaman's
+  // MQTTBridge has no external-stats injection yet (MQTTExternalStats /
+  // setBridgeExternalStats were ours). Port that hook to their bridge, then re-enable.
+  // Until then /status radio stats read blank on the 2-chip observer.
   if (radio_driver.hasStats()) {
     uint32_t tx_air, rx_air, queue, uptime, pkts_sent, pkts_recv; uint16_t errflags;
     radio_driver.takeStats(tx_air, rx_air, queue, uptime, errflags, pkts_sent, pkts_recv);
-    MQTTExternalStats es;
-    es.tx_air_secs      = (int)tx_air;
-    es.rx_air_secs      = (int)rx_air;
-    es.queue_len        = (int)queue;
-    es.uptime_secs      = (int)uptime;
-    es.err_flags        = (int)errflags;
-    es.packets_sent     = (int)pkts_sent;
-    es.packets_received = (int)pkts_recv;
-    the_mesh.setBridgeExternalStats(es);
+    (void)tx_air; (void)rx_air; (void)queue; (void)uptime; (void)errflags; (void)pkts_sent; (void)pkts_recv;
   }
 
   // Push NTP-synced UTC time DOWN to the nRF52 (it has no RTC) so its adverts and

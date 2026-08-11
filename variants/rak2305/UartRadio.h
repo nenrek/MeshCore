@@ -201,7 +201,8 @@ public:
   void setParams(float, float, uint8_t, uint8_t) { }
   void setTxPower(uint8_t) { }
   bool getRxBoostedGainMode() const { return false; }
-  void setRxBoostedGainMode(bool) { }
+  bool setRxBoostedGainMode(bool) { return false; }  // 1.17 MyMesh returns this; no real radio
+  void powerOff() { }                                // 1.17 ESP32Board::enterDeepSleep calls radio_driver.powerOff()
 
   uint32_t getEstAirtimeFor(int) override { return 0; }
   float    packetScore(float, int) override { return 0.0f; }
