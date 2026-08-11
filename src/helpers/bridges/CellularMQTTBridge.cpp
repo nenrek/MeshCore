@@ -321,15 +321,18 @@ void CellularMQTTBridge::buildAndQueueStatus() {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
-  // TODO(reboot-telemetry): agessaman's buildStatusMessage has no reboot fields yet.
-  // Per the 1.17 plan we KEEP reboot telemetry — thread reboot_reason/reboot_count
-  // through MQTTMessageBuilder + MQTTPayloadBuilder and emit them, then pass here.
+  // Reboot telemetry (now emitted in their MQTTMessageBuilder/MQTTPayloadBuilder status):
+  // reason is best-effort on nRF52 (Adafruit bootloader clears RESETREAS), count is
+  // flash-persisted so it survives the bootloader.
+  const char* reboot_reason = nullptr; int reboot_dummy = 0;
+  rebootDiag(&reboot_reason, &reboot_dummy);
   int len = MQTTMessageBuilder::buildStatusMessage(
     _json_doc, _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, _scratch, STATUS_BUF,
     battery_mv, uptime_secs, errors, /*queue_len*/ _q_count, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, /*internal_heap*/ -1,
-    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on");
+    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on",
+    (int)_prefs->reboot_count, reboot_reason);
 
   if (len <= 0) return;
   char topic[128];

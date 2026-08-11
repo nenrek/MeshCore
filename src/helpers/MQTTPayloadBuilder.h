@@ -32,7 +32,9 @@ public:
     int internal_heap = -1,
     int packets_sent = -1,
     int packets_received = -1,
-    const char* repeat = nullptr
+    const char* repeat = nullptr,
+    int reboot_count = -1,
+    const char* reboot_reason = nullptr
   );
 
   static int buildPacketMessage(

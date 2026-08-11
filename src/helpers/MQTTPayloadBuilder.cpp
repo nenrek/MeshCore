@@ -45,7 +45,9 @@ int MQTTPayloadBuilder::buildStatusMessage(
   int internal_heap,
   int packets_sent,
   int packets_received,
-  const char* repeat
+  const char* repeat,
+  int reboot_count,
+  const char* reboot_reason
 ) {
   doc.clear();
   JsonObject root = doc.to<JsonObject>();
@@ -64,7 +66,8 @@ int MQTTPayloadBuilder::buildStatusMessage(
 
   if (battery_mv >= 0 || uptime_secs >= 0 || errors >= 0 || queue_len >= 0 ||
       noise_floor > -999 || tx_air_secs >= 0 || rx_air_secs >= 0 || recv_errors >= 0 ||
-      internal_heap >= 0 || packets_sent >= 0 || packets_received >= 0) {
+      internal_heap >= 0 || packets_sent >= 0 || packets_received >= 0 ||
+      reboot_count >= 0 || reboot_reason != nullptr) {
     JsonObject stats = root["stats"].to<JsonObject>();
 
     if (battery_mv >= 0) stats["battery_mv"] = battery_mv;
@@ -78,6 +81,8 @@ int MQTTPayloadBuilder::buildStatusMessage(
     if (rx_air_secs >= 0) stats["rx_air_secs"] = rx_air_secs;
     if (recv_errors >= 0) stats["recv_errors"] = recv_errors;
     if (internal_heap >= 0) stats["internal_heap"] = internal_heap;
+    if (reboot_count >= 0) stats["reboot_count"] = reboot_count;
+    if (reboot_reason != nullptr) stats["reboot_reason"] = reboot_reason;
   }
 
   return serializeComplete(root, buffer, buffer_size);
