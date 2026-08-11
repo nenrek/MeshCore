@@ -75,6 +75,29 @@ public:
   // They live in MQTTPrefs, persisted separately to /mqtt_prefs, so this struct
   // stays aligned with upstream. See struct MQTTPrefs below.
 
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  // --- cellular observer (RAK3401+BG77): self-contained `cell.*` config, guarded so
+  // it never touches non-cellular builds. Persisted via the CellularPrefs group below. ---
+  char     cellular_host[64] = "";        // broker hostname/IP (bare, no scheme)
+  uint16_t cellular_port = 8883;          // broker port (mqtts)
+  char     cellular_user[32] = "";        // MQTT username (empty = anonymous)
+  char     cellular_pass[64] = "";        // MQTT password
+  char     cellular_iata[8] = "";         // IATA topic segment (e.g. "ATW")
+  char     cellular_origin[32] = "";      // display name for MQTT JSON (empty = node_name)
+  char     cellular_apn[40] = "hologram"; // APN
+  char     cellular_band[24] = "";        // LTE-M band mask hint (Quectel hex); empty = modem default
+  uint8_t  cellular_tls = 1;              // 1 = mqtts, 0 = plaintext
+  uint8_t  cellular_tls_verify = 1;       // 1 = verify broker cert against uploaded CA
+  uint8_t  cellular_pkts_enabled = 1;     // publish RX packets
+  uint8_t  cellular_rx_enabled = 1;       // RX uplink gate
+  uint8_t  cellular_status_enabled = 1;   // publish /status
+  uint8_t  cellular_tx_enabled = 0;       // TX uplink: 0=off, 1=all, 2=advert-only
+  uint32_t cellular_status_interval = 300000; // /status publish interval (ms)
+  uint8_t  cellular_gps_enabled = 0;      // BG77 GNSS self-location -> advert lat/lon
+  uint16_t cellular_keepalive = 60;       // MQTT keepalive seconds
+  uint32_t reboot_count = 0;              // reliability telemetry (flash-persisted)
+#endif
+
 private:
   class RadioPrefs : public ConfigSerializer {
     NodePrefs* _parent;
@@ -169,6 +192,36 @@ private:
   };
   RoomPrefs room;
 
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  class CellularPrefs : public ConfigSerializer {  // self-contained cell.* config
+    NodePrefs* _parent;
+  protected:
+    void structure() override {
+      def("host", _parent->cellular_host, sizeof(_parent->cellular_host));
+      def("port", _parent->cellular_port);
+      def("user", _parent->cellular_user, sizeof(_parent->cellular_user));
+      def("pass", _parent->cellular_pass, sizeof(_parent->cellular_pass));
+      def("iata", _parent->cellular_iata, sizeof(_parent->cellular_iata));
+      def("origin", _parent->cellular_origin, sizeof(_parent->cellular_origin));
+      def("apn", _parent->cellular_apn, sizeof(_parent->cellular_apn));
+      def("band", _parent->cellular_band, sizeof(_parent->cellular_band));
+      def("tls", _parent->cellular_tls);
+      def("tls_verify", _parent->cellular_tls_verify);
+      def("pkts", _parent->cellular_pkts_enabled);
+      def("rx", _parent->cellular_rx_enabled);
+      def("status", _parent->cellular_status_enabled);
+      def("tx", _parent->cellular_tx_enabled);
+      def("interval", _parent->cellular_status_interval);
+      def("gps", _parent->cellular_gps_enabled);
+      def("keepalive", _parent->cellular_keepalive);
+      def("reboot_cnt", _parent->reboot_count);
+    }
+  public:
+    CellularPrefs(NodePrefs* parent) : _parent(parent) { }
+  };
+  CellularPrefs cellular;
+#endif
+
 protected:
   void structure() override {
     def("name", node_name, sizeof(node_name));
@@ -186,10 +239,17 @@ protected:
     def("repeat", repeat);
     def("room", room);
     def("power", power);
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+    def("cell", cellular);
+#endif
   }
 
 public:
-  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this) {
+  NodePrefs() : ConfigSerializer(), bridge(this), gps(this), radio(this), power(this), repeat(this), room(this)
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+    , cellular(this)
+#endif
+  {
     node_name[0] = 0;
     password[0] = 0;
     guest_password[0] = 0;

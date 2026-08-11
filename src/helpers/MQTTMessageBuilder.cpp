@@ -1,7 +1,8 @@
 // MQTT-only translation unit. 22 variants re-glob helpers/*.cpp past the
 // arduino_base exclusion, so the contents are guarded here rather than in
 // the build filter — same idiom as helpers/esp32/WebConfigServer.cpp.
-#ifdef WITH_MQTT_BRIDGE
+// (Widened to include the cellular bridge, which reuses this builder verbatim.)
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
 
 #include "MQTTMessageBuilder.h"
 #include "MQTTPayloadBuilder.h"
