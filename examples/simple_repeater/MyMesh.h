@@ -362,6 +362,14 @@ public:
     }
   }
 
+#ifdef WITH_MQTT_BRIDGE
+  // Push companion-supplied real radio/mesh stats into the bridge /status (RAK2305
+  // uplink observer: the real stats live on the companion nRF52, fed over UART).
+  void setBridgeExternalStats(const MQTTBridge::ExternalStats& s) {
+    if (bridge) bridge->setExternalStats(s);
+  }
+#endif
+
   void restartBridge() override {
     if (!bridge || !bridge->isRunning()) return;
 #ifdef WITH_WEBCONFIG

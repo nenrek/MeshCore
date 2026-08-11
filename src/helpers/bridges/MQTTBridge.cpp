@@ -2335,6 +2335,10 @@ void MQTTBridge::publishStatusToSlot(int index) {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
+  // Radio-less uplink boards (RAK2305): overlay the companion nRF52's real stats.
+  int queue_len = _queue_count;
+  applyExternalStats(tx_air_secs, rx_air_secs, uptime_secs, errors, packets_sent, packets_received, queue_len);
+
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
@@ -2342,7 +2346,7 @@ void MQTTBridge::publishStatusToSlot(int index) {
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, json_buffer, STATUS_JSON_BUFFER_SIZE,
-    battery_mv, uptime_secs, errors, _queue_count, noise_floor,
+    battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
     _prefs->disable_fwd ? "off" : "on"
@@ -3195,6 +3199,10 @@ bool MQTTBridge::publishStatus() {
     recv_errors = (int)_radio->getPacketsRecvErrors();
   }
 
+  // Radio-less uplink boards (RAK2305): overlay the companion nRF52's real stats.
+  int queue_len = _queue_count;
+  applyExternalStats(tx_air_secs, rx_air_secs, uptime_secs, errors, packets_sent, packets_received, queue_len);
+
   // Internal heap free (for diagnosing repeater hangs from internal heap exhaustion)
   int internal_heap_free = (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
@@ -3202,7 +3210,7 @@ bool MQTTBridge::publishStatus() {
     _status_json_doc,
     _origin, origin_id, _board_model, _firmware_version, radio_info,
     client_version, "online", timestamp, json_buffer, STATUS_JSON_BUFFER_SIZE,
-    battery_mv, uptime_secs, errors, _queue_count, noise_floor,
+    battery_mv, uptime_secs, errors, queue_len, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, internal_heap_free,
     packets_sent, packets_received,
     _prefs->disable_fwd ? "off" : "on"
@@ -4193,6 +4201,19 @@ void MQTTBridge::setStatsSources(mesh::Dispatcher* dispatcher, mesh::Radio* radi
   _radio = radio;
   _board = board;
   _ms = ms;
+}
+
+void MQTTBridge::applyExternalStats(int& tx_air_secs, int& rx_air_secs, int& uptime_secs,
+                                    int& errors, int& packets_sent, int& packets_received,
+                                    int& queue_len) {
+  if (!_has_external_stats) return;
+  if (_ext_stats.tx_air_secs >= 0)      tx_air_secs = _ext_stats.tx_air_secs;
+  if (_ext_stats.rx_air_secs >= 0)      rx_air_secs = _ext_stats.rx_air_secs;
+  if (_ext_stats.uptime_secs >= 0)      uptime_secs = _ext_stats.uptime_secs;
+  if (_ext_stats.err_flags >= 0)        errors = _ext_stats.err_flags;
+  if (_ext_stats.packets_sent >= 0)     packets_sent = _ext_stats.packets_sent;
+  if (_ext_stats.packets_received >= 0) packets_received = _ext_stats.packets_received;
+  if (_ext_stats.queue_len >= 0)        queue_len = _ext_stats.queue_len;
 }
 
 #endif

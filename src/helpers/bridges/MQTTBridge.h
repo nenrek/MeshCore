@@ -649,9 +649,25 @@ public:
   void setStatsSources(mesh::Dispatcher* dispatcher, mesh::Radio* radio,
                        mesh::MainBoard* board, mesh::MillisecondClock* ms);
 
+  // Companion-supplied real radio/mesh stats. On a radio-less uplink board (RAK2305:
+  // ESP32 fronting an nRF52 over UART) the local dispatcher has no airtime/queue/uptime,
+  // so the companion pushes the nRF52's real values here to override the /status blanks.
+  struct ExternalStats {
+    int tx_air_secs = -1, rx_air_secs = -1, queue_len = -1, uptime_secs = -1;
+    int err_flags = -1, packets_sent = -1, packets_received = -1;
+  };
+  void setExternalStats(const ExternalStats& s) { _ext_stats = s; _has_external_stats = true; }
+
 #ifdef WITH_SNMP
   void setSNMPAgent(MeshSNMPAgent* agent) { _snmp_agent = agent; }
 #endif
+
+private:
+  ExternalStats _ext_stats;
+  bool _has_external_stats = false;
+  // Overlay companion stats onto the locally-collected values (no-op unless pushed).
+  void applyExternalStats(int& tx_air_secs, int& rx_air_secs, int& uptime_secs, int& errors,
+                          int& packets_sent, int& packets_received, int& queue_len);
 };
 
 #endif

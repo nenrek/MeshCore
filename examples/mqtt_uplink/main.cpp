@@ -194,16 +194,22 @@ void loop() {
     board.setBattMilliVolts(radio_driver.takeBatt());
   }
 
-  // TODO(1.17): companion-stats override — feed the nRF52's real radio/mesh stats
-  // (MCSTA: airtime/queue/uptime/errors/packet-counts) into the bridge /status so a
-  // radio-less ESP32 reports the REAL values, not its own blanks. agessaman's
-  // MQTTBridge has no external-stats injection yet (MQTTExternalStats /
-  // setBridgeExternalStats were ours). Port that hook to their bridge, then re-enable.
-  // Until then /status radio stats read blank on the 2-chip observer.
+  // Companion-stats override: feed the nRF52's real radio/mesh stats (MCSTA:
+  // airtime/queue/uptime/errors/packet-counts) into the bridge /status so this
+  // radio-less ESP32 reports the REAL values instead of its own blanks. (noise
+  // floor + recv errors flow through UartRadio's getNoiseFloor()/getPacketsRecvErrors().)
   if (radio_driver.hasStats()) {
     uint32_t tx_air, rx_air, queue, uptime, pkts_sent, pkts_recv; uint16_t errflags;
     radio_driver.takeStats(tx_air, rx_air, queue, uptime, errflags, pkts_sent, pkts_recv);
-    (void)tx_air; (void)rx_air; (void)queue; (void)uptime; (void)errflags; (void)pkts_sent; (void)pkts_recv;
+    MQTTBridge::ExternalStats es;
+    es.tx_air_secs      = (int)tx_air;
+    es.rx_air_secs      = (int)rx_air;
+    es.queue_len        = (int)queue;
+    es.uptime_secs      = (int)uptime;
+    es.err_flags        = (int)errflags;
+    es.packets_sent     = (int)pkts_sent;
+    es.packets_received = (int)pkts_recv;
+    the_mesh.setBridgeExternalStats(es);
   }
 
   // Push NTP-synced UTC time DOWN to the nRF52 (it has no RTC) so its adverts and
