@@ -153,6 +153,14 @@ public:
   typedef void (*TimeSyncCb)(void* ctx, uint32_t epoch);
   void setTimeSyncCallback(TimeSyncCb cb, void* ctx) { _time_cb = cb; _time_ctx = ctx; }
 
+  /** Command downlink: incoming MQTT messages on the subscribed topic are pushed here
+   *  (topic, payload, len). Fired from the ST_READY tick — the callback must only stage
+   *  the command (no blocking, no CLI work) so the mesh loop is never starved. */
+  typedef void (*RecvCb)(void* ctx, const char* topic, const char* payload, int len);
+  void setRecvCallback(RecvCb cb, void* ctx) { _recv_cb = cb; _recv_ctx = ctx; }
+  /** Topic the modem QMTSUBs after each (re)connect. Empty = no subscribe. */
+  void setCommandTopic(const char* topic);
+
 private:
   HardwareSerial& _ser;
   int8_t  _pwrkey, _power_en, _status_pin;
@@ -202,4 +210,9 @@ private:
 
   TimeSyncCb _time_cb = nullptr;
   void*      _time_ctx = nullptr;
+
+  RecvCb     _recv_cb  = nullptr;
+  void*      _recv_ctx = nullptr;
+  char       _cmd_topic[96] = {0};   // QMTSUB target; set by the bridge before connect
+  void parseRecvUrc(char* line);     // parse a "+QMTRECV:" URC and fire _recv_cb
 };

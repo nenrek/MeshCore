@@ -49,7 +49,10 @@ void CellularMQTTBridge::resolveOrigin() {
 bool CellularMQTTBridge::buildTopic(MsgType type, char* buf, size_t buf_size) {
   const char* iata = _prefs->cellular_iata;
   if (!iata || iata[0] == '\0' || _device_id[0] == '\0') return false;
-  const char* t = (type == MSG_STATUS) ? "status" : (type == MSG_PACKETS) ? "packets" : "raw";
+  const char* t = (type == MSG_STATUS)  ? "status"
+                : (type == MSG_PACKETS) ? "packets"
+                : (type == MSG_CMD)     ? "cmd"
+                : (type == MSG_ACK)     ? "ack" : "raw";
   snprintf(buf, buf_size, "meshcore/%s/%s/%s", iata, _device_id, t);
   return true;
 }
@@ -111,6 +114,15 @@ void CellularMQTTBridge::begin() {
   _modem.setTLS(_prefs->cellular_tls != 0, _prefs->cellular_tls_verify != 0);
   _modem.setKeepAlive(_prefs->cellular_keepalive ? _prefs->cellular_keepalive : 60);
   _modem.setTimeSyncCallback(&CellularMQTTBridge::onModemTime, this);
+
+  // Command downlink: subscribe to meshcore/<iata>/<devid>/cmd after each connect and route
+  // received commands through the CLI. Only armed once a sink is registered (MyMesh does so in
+  // setBridgeState); without it the topic is left empty and the modem never subscribes.
+  char cmd_topic[96];
+  if (_cmd_sink && buildTopic(MSG_CMD, cmd_topic, sizeof(cmd_topic))) {
+    _modem.setCommandTopic(cmd_topic);
+    _modem.setRecvCallback(&CellularMQTTBridge::onModemRecv, this);
+  }
 #ifdef CELLULAR_AT_DEBUG
   _modem.setDebugStream(&Serial);   // echo AT traffic to USB during bring-up
 #endif
@@ -141,6 +153,7 @@ void CellularMQTTBridge::loop() {
         buildAndQueueStatus();
       }
     }
+    drainInbox(); // run one staged downlink command (before drainOne so its ack queues first)
     drainOne();   // one modem exchange per loop iteration
   }
 
@@ -376,6 +389,30 @@ void CellularMQTTBridge::formatStatus(char* buf, size_t buf_size) {
 void CellularMQTTBridge::onModemTime(void* ctx, uint32_t epoch) {
   CellularMQTTBridge* self = (CellularMQTTBridge*)ctx;
   if (self && self->_rtc && epoch > 1700000000UL) self->_rtc->setCurrentTime(epoch);
+}
+
+// Fires from the modem's ST_READY tick. Stage the command only — no CLI, no publish here;
+// drainInbox() does the work from loop(). If a command is already staged (not yet drained)
+// we drop the newer one rather than clobber — commands are rare and the sender can retry.
+void CellularMQTTBridge::onModemRecv(void* ctx, const char* /*topic*/, const char* payload, int len) {
+  CellularMQTTBridge* self = (CellularMQTTBridge*)ctx;
+  if (!self || self->_inbox_ready || len <= 0) return;
+  int n = (len < (int)sizeof(self->_inbox) - 1) ? len : (int)sizeof(self->_inbox) - 1;
+  memcpy(self->_inbox, payload, n);
+  self->_inbox[n] = 0;
+  self->_inbox_ready = true;
+}
+
+void CellularMQTTBridge::drainInbox() {
+  if (!_inbox_ready) return;
+  char ack[256];
+  bool publish_ack = _cmd_sink && _cmd_sink->runRemoteCommand(_inbox, ack, sizeof(ack));
+  _inbox_ready = false;   // release the slot for the next command
+  if (publish_ack) {
+    char ack_topic[96];
+    if (buildTopic(MSG_ACK, ack_topic, sizeof(ack_topic)))
+      enqueue(ack_topic, ack, strlen(ack), 1, false);   // QoS1, not retained
+  }
 }
 
 #endif // WITH_CELLULAR_MQTT_BRIDGE

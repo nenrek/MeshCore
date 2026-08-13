@@ -36,6 +36,10 @@
 #define WITH_BRIDGE
 #endif
 
+#ifdef WITH_BRIDGE
+#include "helpers/bridges/RemoteCommandSink.h"
+#endif
+
 #ifdef WITH_SNMP
 #include "helpers/SNMPAgent.h"
 #endif
@@ -98,6 +102,9 @@ struct NeighbourInfo {
 class MyMesh : public mesh::Mesh, public CommonCLICallbacks
 #ifdef WITH_WEBCONFIG
     , public WebConfigServer::Callbacks
+#endif
+#ifdef WITH_BRIDGE
+    , public RemoteCommandSink
 #endif
 {
   FILESYSTEM* _fs;
@@ -333,6 +340,14 @@ public:
   void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
   void loop();
 
+#ifdef WITH_BRIDGE
+  // RemoteCommandSink: run a command that arrived over the MQTT downlink. Verifies the
+  // replay counter + allowlist, then routes through handleCommand (the same path a local
+  // console uses). Returns true and fills `ack` with {id,seq,result|err}.
+  bool runRemoteCommand(const char* envelope, char* ack, size_t ack_size) override;
+  uint32_t _cmd_last_seq = 0;   // replay guard; RAM-only (resets on reboot) until Phase 3 signing
+#endif
+
 #if defined(WITH_BRIDGE)
   void setBridgeState(bool enable) override {
     if (!bridge) {
@@ -340,6 +355,7 @@ public:
       bridge = new MQTTBridge(&_prefs, _cli.getObserverPrefs(), _mgr, getRTCClock(), &self_id);
 #elif defined(WITH_CELLULAR_MQTT_BRIDGE)
       bridge = new CellularMQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
+      if (bridge) bridge->setCommandSink(this);   // arm the command downlink
 #endif
       if (!bridge) return;
     }

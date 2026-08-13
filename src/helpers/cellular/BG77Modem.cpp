@@ -350,10 +350,61 @@ BG77Modem::AtRes BG77Modem::openConnectTick() {
       int ret = c2 ? atoi(c2 + 1) : -1;
       if (result != 0 || ret != 0) { snprintf(_last_err, sizeof(_last_err), "conn:%d/%d", result, ret); return AT_FAIL; }
       snprintf(_last_err, sizeof(_last_err), "ok");
+      if (!_cmd_topic[0]) return AT_OK;   // no command downlink configured -> done
+      _phase_step = 9; return AT_BUSY;
+    }
+    case 9: {  // deliver incoming messages as +QMTRECV URCs with the payload inline (mode 0, +len)
+      snprintf(cmd, sizeof(cmd), "AT+QMTCFG=\"recv/mode\",%u,0,1", MQTT_CLIENT_IDX);
+      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 10; return AT_BUSY;
+    }
+    case 10: {  // subscribe to the per-node command topic (QoS1). Re-runs on every reconnect,
+                // so the subscription self-heals after a broker drop. +QMTSUB: <idx>,<mid>,<result>
+      snprintf(cmd, sizeof(cmd), "AT+QMTSUB=%u,%u,\"%s\",1", MQTT_CLIENT_IDX, _msg_id++, _cmd_topic);
+      AtRes r = atTick(cmd, "+QMTSUB:", T_CFG);
+      if (r == AT_BUSY) return AT_BUSY;
+      // A failed subscribe is non-fatal: the node is connected and still uplinks; it just
+      // won't receive commands until the next reconnect retries QMTSUB. Don't drop MQTT for it.
       return AT_OK;
     }
   }
   return AT_OK;
+}
+
+void BG77Modem::setCommandTopic(const char* topic) {
+  if (topic) { strncpy(_cmd_topic, topic, sizeof(_cmd_topic) - 1); _cmd_topic[sizeof(_cmd_topic) - 1] = 0; }
+  else _cmd_topic[0] = 0;
+}
+
+// Parse a "+QMTRECV: <idx>,<mid>,<topic>,<len>,<payload>" URC (recv/mode 0, msg_len on) and
+// hand the payload to the bridge. Quectel quotes <topic> and <payload>; <len> is the byte
+// count. We locate the last two commas structurally rather than trusting the payload to be
+// comma-free, using <len> to bound the copy.
+void BG77Modem::parseRecvUrc(char* line) {
+  if (!_recv_cb) return;
+  char* p = strstr(line, "+QMTRECV:");
+  if (!p) return;
+  p += 9;
+  // fields: ,<idx> ,<mid> ,"<topic>" ,<len> ,"<payload>"
+  char* c1 = strchr(p, ',');            if (!c1) return;   // after idx
+  char* c2 = strchr(c1 + 1, ',');       if (!c2) return;   // after mid -> topic starts
+  char* topic = c2 + 1;
+  while (*topic == ' ') topic++;
+  bool tq = (*topic == '"'); if (tq) topic++;
+  char* tend = tq ? strchr(topic, '"') : strchr(topic, ',');
+  if (!tend) return;
+  char* after_topic = tq ? tend + 1 : tend;               // at the comma before <len>
+  char* clen = strchr(after_topic, ',');  if (!clen) return;
+  int len = atoi(clen + 1);
+  char* cpay = strchr(clen + 1, ',');     if (!cpay) return;
+  char* payload = cpay + 1;
+  while (*payload == ' ') payload++;
+  if (*payload == '"') payload++;
+  if (len < 0) len = 0;
+  if (len > (int)strlen(payload)) len = (int)strlen(payload);  // clamp to what we actually have
+  *tend = 0;                                              // terminate topic in place
+  char saved = payload[len]; payload[len] = 0;            // terminate payload at <len>
+  _recv_cb(_recv_ctx, topic, payload, len);
+  payload[len] = saved;
 }
 
 void BG77Modem::enterBackoff(const char* why) {
@@ -452,9 +503,12 @@ void BG77Modem::loop() {
     }
 
     case ST_READY: {
-      // Watch for an async disconnect URC (+QMTSTAT: <idx>,<err>).
+      // Watch for async URCs: a broker disconnect (+QMTSTAT) or an inbound command (+QMTRECV).
       int n = readLine(5);
-      if (n > 0 && strstr(_line, "+QMTSTAT:")) enterBackoff("broker disconnect");
+      if (n > 0) {
+        if (strstr(_line, "+QMTSTAT:"))      enterBackoff("broker disconnect");
+        else if (strstr(_line, "+QMTRECV:")) parseRecvUrc(_line);
+      }
       break;
     }
 

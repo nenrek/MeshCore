@@ -1159,6 +1159,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
     bridge = new MQTTBridge(&_prefs, _cli.getObserverPrefs(), _mgr, getRTCClock(), &self_id);
 #elif defined(WITH_CELLULAR_MQTT_BRIDGE)
     bridge = new CellularMQTTBridge(&_prefs, _mgr, getRTCClock(), &self_id);
+    if (bridge) bridge->setCommandSink(this);   // arm the command downlink
 #endif
     if (bridge) {
       // Set device public key for MQTT topics
@@ -1560,6 +1561,51 @@ void MyMesh::buildStatsJson(char* buf, size_t buf_size) {
   snprintf(buf + pos, buf_size - pos, "]}");
 }
 #endif
+
+#ifdef WITH_BRIDGE
+// Allow-by-default with a denylist of commands that could brick the node, rotate credentials,
+// or touch identity/firmware. Reads (`get *`) are always safe. Denylist substrings are chosen
+// so they can't clip a safe command — e.g. "keepalive" contains none of them.
+static bool remoteCommandAllowed(const char* cmd) {
+  while (*cmd == ' ') cmd++;
+  if (strncmp(cmd, "get ", 4) == 0) return true;
+  if (strcmp(cmd, "cell.status") == 0) return true;
+  static const char* const denied[] = {
+    "cell.pass", "password", "admin", "erase", "format",
+    "ota", "firmware", "import", "export", "identity", "factory"
+  };
+  for (unsigned i = 0; i < sizeof(denied) / sizeof(denied[0]); i++)
+    if (strstr(cmd, denied[i])) return false;
+  return true;   // config sets, reboot, advert, gps, keepalive, interval, etc.
+}
+
+bool MyMesh::runRemoteCommand(const char* envelope, char* ack, size_t ack_size) {
+  StaticJsonDocument<256> in;
+  if (deserializeJson(in, envelope)) { snprintf(ack, ack_size, "{\"err\":\"parse\"}"); return true; }
+  const char* id  = in["id"]  | "";
+  uint32_t    seq = in["seq"] | 0UL;
+  const char* cmd = in["cmd"] | "";
+
+  StaticJsonDocument<300> out;
+  out["id"] = id;
+  if (seq) out["seq"] = seq;
+
+  if (seq && seq <= _cmd_last_seq) { out["err"] = "replay"; serializeJson(out, ack, ack_size); return true; }
+  if (!cmd[0] || !remoteCommandAllowed(cmd)) { out["err"] = "denied"; serializeJson(out, ack, ack_size); return true; }
+  if (seq) _cmd_last_seq = seq;
+
+  // Route through the same CLI a local USB console uses (sender_timestamp 0 = trusted/local).
+  // A disruptive command (e.g. set cell.server -> restartBridge) may drop the connection, but
+  // the ack is queued in the bridge and survives the restart — it just arrives after reconnect.
+  char cmdbuf[128];
+  strncpy(cmdbuf, cmd, sizeof(cmdbuf) - 1); cmdbuf[sizeof(cmdbuf) - 1] = 0;
+  char reply[160]; reply[0] = 0;
+  handleCommand(0, cmdbuf, reply);
+  out["result"] = reply;
+  serializeJson(out, ack, ack_size);
+  return true;
+}
+#endif // WITH_BRIDGE
 
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
   if (region_load_active) {

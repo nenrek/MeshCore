@@ -4,6 +4,7 @@
 #include "helpers/bridges/BridgeBase.h"
 #include "helpers/MQTTMessageBuilder.h"
 #include "helpers/cellular/BG77Modem.h"
+#include "helpers/bridges/RemoteCommandSink.h"
 #include <ArduinoJson.h>
 
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
@@ -69,9 +70,11 @@ public:
   BG77Modem& modem() { return _modem; }
   // Compact one-line status for the mesh-pollable `cell.status` CLI command.
   void formatStatus(char* buf, size_t buf_size);
+  // Command downlink: MyMesh registers itself so received commands run through the CLI.
+  void setCommandSink(RemoteCommandSink* sink) { _cmd_sink = sink; }
 
 private:
-  enum MsgType { MSG_STATUS, MSG_PACKETS, MSG_RAW };
+  enum MsgType { MSG_STATUS, MSG_PACKETS, MSG_RAW, MSG_CMD, MSG_ACK };
   bool buildTopic(MsgType type, char* buf, size_t buf_size);
   void resolveOrigin();                 // node_name / mqtt_origin -> _origin
   void buildAndQueueStatus();
@@ -84,6 +87,10 @@ private:
   void handleGnss();
   // Static trampoline so BG77Modem can push network time into the mesh RTC clock.
   static void onModemTime(void* ctx, uint32_t epoch);
+  // Static trampoline for an inbound command URC. Stages only (fires from the modem tick);
+  // the command runs from loop() via _cmd_sink so we never execute inside the AT parser.
+  static void onModemRecv(void* ctx, const char* topic, const char* payload, int len);
+  void drainInbox();   // called from loop(): run the staged command + publish the ack
 
   static const size_t PACKET_BUF = 2048;   // matches MQTTBridge PUBLISH_JSON_BUFFER_SIZE
   static const size_t STATUS_BUF = 768;    // matches MQTTBridge STATUS_JSON_BUFFER_SIZE
@@ -113,6 +120,11 @@ private:
 
   unsigned long _last_status = 0;
   uint32_t _published = 0, _dropped = 0;
+
+  // Command downlink. onModemRecv() stages one command here; drainInbox() runs it from loop().
+  RemoteCommandSink* _cmd_sink = nullptr;
+  char _inbox[256] = {0};
+  volatile bool _inbox_ready = false;   // set in the modem-tick callback, cleared in loop()
 
   // GNSS acquisition state. One-shot per boot: on a stationary node a single fix is all we
   // need, and each attempt briefly tears down the uplink (BG77 GNSS preempts LTE), so we
