@@ -422,7 +422,15 @@ void BG77Modem::enterBackoff(const char* why) {
   _state_since = millis();
   _at_active = false;          // abort any in-flight AT command; ST_INIT re-issues cleanly
   _phase_step = 0;
+  _pub_fail_streak = 0;        // fresh start; a reconnect re-establishes the session + subscribe
   if (_dbg) { _dbg->print("[BG77] backoff: "); _dbg->println(why ? why : "?"); }
+}
+
+// A publish failed while we believed we were connected. If enough fail back-to-back the link
+// has silently dropped, so force a reconnect (which re-runs QMTCLOSE + QMTOPEN + QMTSUB).
+bool BG77Modem::pubFailed() {
+  if (++_pub_fail_streak >= PUB_FAIL_LIMIT) enterBackoff("publish failing (link lost)");
+  return false;
 }
 
 // ---- lifecycle ------------------------------------------------------------
@@ -562,15 +570,15 @@ bool BG77Modem::publish(const char* topic, const char* payload, size_t len, uint
            MQTT_CLIENT_IDX, mid, qos, retain ? 1 : 0, topic, (unsigned)len);
   flushInput();
   sendAT(cmd);
-  if (!waitForPrompt(T_AT)) { snprintf(_last_pub, sizeof(_last_pub), "noprompt"); return false; }
+  if (!waitForPrompt(T_AT)) { snprintf(_last_pub, sizeof(_last_pub), "noprompt"); return pubFailed(); }
   _ser.write((const uint8_t*)payload, len);
 
   // Result: +QMTPUB: <idx>,<msgid>,<result>[,<value>]  (result 0 = sent).
-  if (!waitFor("+QMTPUB:", T_PUB)) { snprintf(_last_pub, sizeof(_last_pub), "noack"); return false; }
+  if (!waitFor("+QMTPUB:", T_PUB)) { snprintf(_last_pub, sizeof(_last_pub), "noack"); return pubFailed(); }
   int rc = parseQmtpubResult(_line);
-  if (rc == 0) { snprintf(_last_pub, sizeof(_last_pub), "ok"); return true; }
+  if (rc == 0) { snprintf(_last_pub, sizeof(_last_pub), "ok"); _pub_fail_streak = 0; return true; }
   snprintf(_last_pub, sizeof(_last_pub), "rc%d", rc);
-  return false;
+  return pubFailed();
 }
 
 // ---- GNSS ------------------------------------------------------------------

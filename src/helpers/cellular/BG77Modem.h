@@ -136,6 +136,7 @@ private:
   // bring-up steps ----------------------------------------------------------
   void   powerPulse();
   void   enterBackoff(const char* why);
+  bool   pubFailed();   // count a publish failure; force a reconnect after PUB_FAIL_LIMIT in a row
   void   enterState(State s);    // transition + reset the per-phase tick state
   // Non-blocking, time-sliced bring-up: each *Tick() advances at most one AT step per call
   // and returns AT_BUSY/OK/FAIL, so loop() never blocks long enough to starve the mesh RX
@@ -188,6 +189,11 @@ private:
   char     _last_err[48] = "none";
   char     _last_pub[20] = "none";   // diagnostic: outcome of the last publish() attempt
   uint16_t _msg_id       = 1;
+  // Consecutive publish failures while nominally connected. A silent link drop (no +QMTSTAT
+  // URC, common at marginal signal) leaves mqtt=up but every QMTPUB fails; after a few we force
+  // a reconnect so the node can't sit in a stale mqtt=up (unable to publish OR subscribe).
+  uint8_t  _pub_fail_streak = 0;
+  static const uint8_t PUB_FAIL_LIMIT = 3;
   unsigned long _state_since = 0;   // millis() when we entered _state
   unsigned long _last_poll   = 0;
   unsigned long _backoff_until = 0;
