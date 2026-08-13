@@ -205,6 +205,7 @@ private:
   uint32_t _at_deadline  = 0;
   char     _at_expect[16]= {0};
   uint8_t  _phase_step   = 0;       // sub-step within the current bring-up phase
+  uint8_t  _preclose     = 0;       // openConnect case 0: 0 = QMTDISC next, 1 = QMTCLOSE next
   uint8_t  _at_retry     = 0;       // retry counter (e.g. the initial AT probe)
   uint8_t  _mqtt_stage   = 0;       // ST_MQTT_SETUP: 0 = TLS config, 1 = open/connect
 

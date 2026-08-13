@@ -159,6 +159,7 @@ void BG77Modem::enterState(State s) {
   _state_since = millis();
   _at_active = false;
   _phase_step = 0;
+  _preclose = 0;
   _at_retry = 0;
   _mqtt_stage = 0;
 }
@@ -299,12 +300,19 @@ BG77Modem::AtRes BG77Modem::setupTLSTick() {
 BG77Modem::AtRes BG77Modem::openConnectTick() {
   char cmd[160];
   switch (_phase_step) {
-    case 0: {  // Close any stale MQTT client FIRST. An nRF52 reboot/DFU does not power-cycle
-               // the BG77, so a session opened before the reboot lingers and makes QMTOPEN
-               // return open:2 ("identifier occupied"). QMTCLOSE frees it (ERROR if none = fine).
-               // Also covers broker-drop -> reconnect, where the old client may be half-open.
+    case 0: {  // Clear any stale MQTT client FIRST. An nRF52 reboot/DFU does not power-cycle the
+               // BG77, so a session opened before the reboot lingers and makes QMTOPEN return
+               // open:2 ("identifier occupied"). A stale *connected* session needs QMTDISC to
+               // free it — QMTCLOSE alone doesn't (observed on BG77LAR02A04 after every DFU) — so
+               // disconnect then close. Both ERROR harmlessly when there's nothing to clear.
+      if (_preclose == 0) {
+        snprintf(cmd, sizeof(cmd), "AT+QMTDISC=%u", MQTT_CLIENT_IDX);
+        AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+        _preclose = 1; return AT_BUSY;
+      }
       snprintf(cmd, sizeof(cmd), "AT+QMTCLOSE=%u", MQTT_CLIENT_IDX);
-      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 1; return AT_BUSY;
+      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+      _preclose = 0; _phase_step = 1; return AT_BUSY;
     }
     case 1: {  // bind MQTT client to the SSL context, or plain TCP if TLS off
       if (_tls) snprintf(cmd, sizeof(cmd), "AT+QMTCFG=\"ssl\",%u,1,%u", MQTT_CLIENT_IDX, SSL_CTX_IDX);
@@ -500,7 +508,7 @@ void BG77Modem::loop() {
     case ST_MQTT_SETUP: {
       if (_mqtt_stage == 0) {            // TLS context config
         AtRes r = setupTLSTick();
-        if (r == AT_OK) { _mqtt_stage = 1; _phase_step = 0; _at_active = false; }
+        if (r == AT_OK) { _mqtt_stage = 1; _phase_step = 0; _preclose = 0; _at_active = false; }
         else if (r == AT_FAIL) enterBackoff("tls setup failed");
       } else {                           // socket open + MQTT connect
         AtRes r = openConnectTick();
