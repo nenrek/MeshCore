@@ -1413,6 +1413,20 @@ void MQTTBridge::mqttTaskLoop() {
       }
     }
 
+    // Publish command acks queued by drainCommands() on Core 1. Publishing must happen on
+    // this task (the client is driven here), so the ack round-trips Core 1 -> Core 0. QoS 1
+    // to the originating slot's .../ack topic; if that slot dropped, the ack is simply lost.
+    #ifdef ESP_PLATFORM
+    if (_ack_outbox && _ack_topic[0]) {
+      AckOutboxItem ack;
+      while (xQueueReceive(_ack_outbox, &ack, 0) == pdTRUE) {
+        if (ack.slot >= 0 && ack.slot < RUNTIME_MQTT_SLOTS && _slots[ack.slot].connected) {
+          publishToSlot(ack.slot, _ack_topic, ack.payload, false, 1);
+        }
+      }
+    }
+    #endif
+
     // Maintain slot connections (token renewal, reconnect with backoff)
     maintainSlotConnections();
 
@@ -1590,6 +1604,15 @@ void MQTTBridge::initSlotClients() {
       // race each other over them. Marshal the publish onto the bridge task via a
       // per-slot flag (see mqttTaskLoop consumer / A2).
       _status_publish_pending[index] = true;
+      // Command downlink: only on operator-configured custom slots (preset==nullptr) so
+      // public preset brokers can't command us. Subscriptions are dropped on disconnect,
+      // so (re)subscribe on every connect. buildCommandTopics reads only config into a
+      // local buffer (safe from this event task); subscribe() enqueues a control packet.
+      #ifdef ESP_PLATFORM
+      if (_cmd_sink && _cmd_inbox && _slots[index].preset == nullptr && buildCommandTopics(index)) {
+        _slots[index].client->subscribe(_cmd_topic, 1);
+      }
+      #endif
     });
     slot.client->onDisconnect([this, index](bool sessionPresent) {
       MQTT_DEBUG_PRINTLN("MQTT%d disconnected", index + 1);
@@ -1623,6 +1646,20 @@ void MQTTBridge::initSlotClients() {
       } else {
         MQTT_DEBUG_PRINTLN("MQTT%d error: type=%d", index + 1, error.error_type);
       }
+    });
+    // Command downlink receive (esp-mqtt event task / Core 0). PsychicMqttClient hands us a
+    // NUL-terminated, fully-reassembled payload. Do the minimum here: match our cmd topic and
+    // hand the envelope to Core 1 via _cmd_inbox. Never touch CLI/prefs from this task.
+    slot.client->onMessage([this, index](char* topic, char* payload, int retain, int qos, bool dup) {
+      #ifdef ESP_PLATFORM
+      if (!_cmd_sink || !_cmd_inbox || !_cmd_topic[0]) return;
+      if (strcmp(topic, _cmd_topic) != 0) return;
+      CmdInboxItem item;
+      item.slot = index;
+      strncpy(item.payload, payload, CMD_MSG_MAX - 1);
+      item.payload[CMD_MSG_MAX - 1] = '\0';
+      xQueueSend(_cmd_inbox, &item, 0);  // non-blocking; a full inbox drops the command
+      #endif
     });
   }
 }
@@ -4172,6 +4209,52 @@ void MQTTBridge::setMessageTypes(bool status, bool packets, bool raw) {
   _status_enabled = status;
   _packets_enabled = packets;
   _raw_enabled = raw;
+}
+
+// --- Command downlink -------------------------------------------------------
+void MQTTBridge::setCommandSink(RemoteCommandSink* sink) {
+  _cmd_sink = sink;
+  _cmd_topic[0] = '\0';
+  _ack_topic[0] = '\0';
+#ifdef ESP_PLATFORM
+  if (sink && !_cmd_inbox)  _cmd_inbox  = xQueueCreate(4, sizeof(CmdInboxItem));
+  if (sink && !_ack_outbox) _ack_outbox = xQueueCreate(4, sizeof(AckOutboxItem));
+#endif
+}
+
+// Derive the cmd/ack topics from the slot's status topic so they track the exact
+// iata/devid the node already publishes under. Only meshcore-format topics carry the
+// fleet command convention (meshcore/<iata>/<devid>/{cmd,ack}).
+bool MQTTBridge::buildCommandTopics(int slot_index) {
+  char status_topic[128];
+  if (!buildTopicForSlot(slot_index, MSG_STATUS, status_topic, sizeof(status_topic))) return false;
+  if (strncmp(status_topic, "meshcore/", 9) != 0) return false;
+  char* last = strrchr(status_topic, '/');
+  if (!last || last == status_topic) return false;
+  *last = '\0';   // -> "meshcore/<iata>/<devid>"
+  int n1 = snprintf(_cmd_topic, sizeof(_cmd_topic), "%s/cmd", status_topic);
+  int n2 = snprintf(_ack_topic, sizeof(_ack_topic), "%s/ack", status_topic);
+  if (n1 <= 0 || n1 >= (int)sizeof(_cmd_topic) || n2 <= 0 || n2 >= (int)sizeof(_ack_topic)) {
+    _cmd_topic[0] = '\0'; _ack_topic[0] = '\0';
+    return false;
+  }
+  return true;
+}
+
+void MQTTBridge::drainCommands() {
+#ifdef ESP_PLATFORM
+  if (!_cmd_sink || !_cmd_inbox) return;
+  CmdInboxItem item;
+  while (xQueueReceive(_cmd_inbox, &item, 0) == pdTRUE) {
+    AckOutboxItem ack;
+    ack.slot = item.slot;
+    ack.payload[0] = '\0';
+    // Executes through the same CLI a local console uses (allowlist + replay in the sink).
+    if (_cmd_sink->runRemoteCommand(item.payload, ack.payload, sizeof(ack.payload))) {
+      if (_ack_outbox) xQueueSend(_ack_outbox, &ack, 0);
+    }
+  }
+#endif
 }
 
 int MQTTBridge::getConnectedBrokers() const {

@@ -1158,6 +1158,7 @@ void MyMesh::begin(FILESYSTEM *fs) {
 #ifdef WITH_MQTT_BRIDGE
       // Set stats sources for automatic stats collection
       bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
+      bridge->setCommandSink(this);   // arm the MQTT command downlink
 #ifdef WITH_SNMP
       if (_cli.getObserverPrefs()->snmp_enabled) {
         _snmp_agent.setNodeName(_prefs.node_name);
@@ -1539,6 +1540,52 @@ void MyMesh::buildStatsJson(char* buf, size_t buf_size) {
 }
 #endif
 
+#ifdef WITH_BRIDGE
+// Allow-by-default with a denylist of commands that could brick the node, rotate credentials,
+// or touch identity/firmware. Reads (`get *`) are always safe. Denylist substrings are chosen
+// so they can't clip a safe command — e.g. "keepalive" contains none of them. Shared verbatim
+// with the cellular branch (cell.status is a harmless no-op on WiFi).
+static bool remoteCommandAllowed(const char* cmd) {
+  while (*cmd == ' ') cmd++;
+  if (strncmp(cmd, "get ", 4) == 0) return true;
+  if (strcmp(cmd, "cell.status") == 0) return true;
+  static const char* const denied[] = {
+    "cell.pass", "password", "admin", "erase", "format",
+    "ota", "firmware", "import", "export", "identity", "factory"
+  };
+  for (unsigned i = 0; i < sizeof(denied) / sizeof(denied[0]); i++)
+    if (strstr(cmd, denied[i])) return false;
+  return true;   // config sets, reboot, advert, gps, keepalive, interval, etc.
+}
+
+bool MyMesh::runRemoteCommand(const char* envelope, char* ack, size_t ack_size) {
+  StaticJsonDocument<256> in;
+  if (deserializeJson(in, envelope)) { snprintf(ack, ack_size, "{\"err\":\"parse\"}"); return true; }
+  const char* id  = in["id"]  | "";
+  uint32_t    seq = in["seq"] | 0UL;
+  const char* cmd = in["cmd"] | "";
+
+  StaticJsonDocument<300> out;
+  out["id"] = id;
+  if (seq) out["seq"] = seq;
+
+  if (seq && seq <= _cmd_last_seq) { out["err"] = "replay"; serializeJson(out, ack, ack_size); return true; }
+  if (!cmd[0] || !remoteCommandAllowed(cmd)) { out["err"] = "denied"; serializeJson(out, ack, ack_size); return true; }
+  if (seq) _cmd_last_seq = seq;
+
+  // Route through the same CLI a local USB console uses (sender_timestamp 0 = trusted/local).
+  // A disruptive command (e.g. reboot) may drop the connection before the ack is published;
+  // the ack is best-effort in that case.
+  char cmdbuf[128];
+  strncpy(cmdbuf, cmd, sizeof(cmdbuf) - 1); cmdbuf[sizeof(cmdbuf) - 1] = 0;
+  char reply[160]; reply[0] = 0;
+  handleCommand(0, cmdbuf, reply);
+  out["result"] = reply;
+  serializeJson(out, ack, ack_size);
+  return true;
+}
+#endif // WITH_BRIDGE
+
 void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply) {
   if (region_load_active) {
     if (StrHelper::isBlank(command)) {  // empty/blank line, signal to terminate 'load' operation
@@ -1666,7 +1713,13 @@ void MyMesh::loop() {
   mesh::Mesh::loop();
 
 #ifdef WITH_BRIDGE
-  // bridge.loop() is now handled by FreeRTOS task on Core 0 - no need to call it here
+  // bridge.loop() is now handled by FreeRTOS task on Core 0 - no need to call it here.
+  // But command-downlink execution MUST run on this task (Core 1): it routes through the
+  // CLI/prefs, which the Core-0 MQTT task must never touch. drainCommands() pops any
+  // received envelopes, runs them, and queues the acks for the MQTT task to publish.
+#ifdef WITH_MQTT_BRIDGE
+  if (bridge) bridge->drainCommands();
+#endif
 #endif
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {

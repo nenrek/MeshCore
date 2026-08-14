@@ -31,6 +31,10 @@
 #include "helpers/esp32/WebConfigServer.h"   // defines WITH_WEBCONFIG on ESP32
 #endif
 
+#ifdef WITH_BRIDGE
+#include "helpers/bridges/RemoteCommandSink.h"
+#endif
+
 #ifdef WITH_SNMP
 #include "helpers/SNMPAgent.h"
 #endif
@@ -94,6 +98,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
 #ifdef WITH_WEBCONFIG
     , public WebConfigServer::Callbacks
 #endif
+#ifdef WITH_BRIDGE
+    , public RemoteCommandSink
+#endif
 {
   FILESYSTEM* _fs;
   uint32_t last_millis;
@@ -133,6 +140,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
   ESPNowBridge bridge;
 #elif defined(WITH_MQTT_BRIDGE)
   MQTTBridge* bridge;
+#endif
+#ifdef WITH_BRIDGE
+  uint32_t _cmd_last_seq = 0;   // replay guard for the MQTT command downlink (RAM-only)
 #endif
 #ifdef WITH_SNMP
   MeshSNMPAgent _snmp_agent;
@@ -347,6 +357,7 @@ public:
       bridge->setBuildDate(getBuildDate());
 #ifdef WITH_MQTT_BRIDGE
       bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
+      bridge->setCommandSink(this);   // arm the command downlink
 #endif
       bridge->begin();
 #ifdef WITH_MQTT_BRIDGE
@@ -389,6 +400,7 @@ public:
     bridge->setBuildDate(getBuildDate());
 #ifdef WITH_MQTT_BRIDGE
     bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
+    bridge->setCommandSink(this);   // arm the command downlink
 #endif
     bridge->begin();
   }
@@ -407,6 +419,11 @@ public:
     (void)slot;
 #endif
   }
+
+  // RemoteCommandSink: execute a command envelope received over the MQTT downlink.
+  // Verifies replay (monotonic seq) + allowlist, runs it through the local CLI, and
+  // writes the ack JSON. Shared verbatim with the cellular branch.
+  bool runRemoteCommand(const char* envelope, char* ack, size_t ack_size) override;
 
 #if defined(WITH_MQTT_BRIDGE)
   // Broadcast a key OTA milestone (start/fail only) on the configured alert

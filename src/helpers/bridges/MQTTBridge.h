@@ -11,6 +11,7 @@
 #include "helpers/MQTTPacketFilter.h"
 #include "helpers/MQTTPresets.h"
 #include "helpers/MQTTLifecycle.h"
+#include "helpers/bridges/RemoteCommandSink.h"
 #include <atomic>
 
 #ifdef WITH_SNMP
@@ -193,6 +194,29 @@ private:
   int _queue_tail;
   #endif
   int _queue_count;  // Protected by queue operations or mutex
+
+  // --- Command downlink (fleet control plane) --------------------------------
+  // Commands arrive on a custom (operator-configured) slot's `.../cmd` topic. The
+  // esp-mqtt event task (Core 0) can't touch the CLI/prefs, and MQTTBridge::loop()
+  // is a no-op on ESP32, so the flow crosses cores twice:
+  //   onMessage cb (Core 0)  -> _cmd_inbox  -> drainCommands() (Core 1, from MyMesh::loop)
+  //   runRemoteCommand ack    -> _ack_outbox -> mqttTaskLoop (Core 0) publishes to .../ack
+  // Gated on a custom slot (preset==nullptr) so public preset brokers can't issue
+  // commands; the sink's allowlist/replay guard is the second line of defence.
+  RemoteCommandSink* _cmd_sink = nullptr;
+  char _cmd_topic[100];   // meshcore/<iata>/<devid>/cmd  (empty until first command slot connects)
+  char _ack_topic[100];   // meshcore/<iata>/<devid>/ack
+  static const size_t CMD_MSG_MAX = 200;
+  static const size_t ACK_MSG_MAX = 220;
+  struct CmdInboxItem { int slot; char payload[CMD_MSG_MAX]; };
+  struct AckOutboxItem { int slot; char payload[ACK_MSG_MAX]; };
+  #ifdef ESP_PLATFORM
+  QueueHandle_t _cmd_inbox = nullptr;   // Core 0 -> Core 1
+  QueueHandle_t _ack_outbox = nullptr;  // Core 1 -> Core 0
+  #endif
+  // Build/refresh _cmd_topic/_ack_topic from a connected command slot's status topic
+  // (swaps the trailing segment) so they track the exact iata/devid the node publishes.
+  bool buildCommandTopics(int slot_index);
 
   // NTP time sync
   WiFiUDP _ntp_udp;
@@ -513,6 +537,15 @@ public:
   void setBuildDate(const char* build_date);
   void storeRawRadioData(const uint8_t* raw_data, int len, float snr, float rssi);
   void setMessageTypes(bool status, bool packets, bool raw);
+
+  // Arm the command downlink: `sink` (MyMesh) executes received command envelopes and
+  // produces the ack. Creates the cross-core queues on first call. Safe to call once
+  // during setup, before begin(). No-op sink=nullptr disables the downlink.
+  void setCommandSink(RemoteCommandSink* sink);
+  // Runs on Core 1 (call from MyMesh::loop): drains received command envelopes, executes
+  // each through the sink, and queues the ack for the MQTT task to publish. Cheap no-op
+  // when no command is pending.
+  void drainCommands();
 
 #if defined(WITH_MQTT_NEIGHBORS)
   // Single source of truth for the neighbors JSON size, used by both the bridge's
