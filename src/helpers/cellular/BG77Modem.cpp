@@ -255,16 +255,21 @@ static uint32_t utc_to_epoch(int y, int mo, int d, int h, int mi, int s) {
 }
 
 BG77Modem::AtRes BG77Modem::syncNetworkTimeTick() {
-  // AT+QLTS=2 -> +QLTS: "yyyy/mm/dd,hh:mm:ss+zz,d"  (GMT/UTC). Best-effort: on OK or FAIL
-  // the caller proceeds either way (the RTC just stays unset if the network gave no time).
+  // AT+QLTS=2 -> +QLTS: "yyyy/mm/dd,hh:mm:ss+zz,d". NOTE: on the BG77 mode 2 is LOCAL time
+  // (mode 1 is GMT); <zz> is the offset from GMT in quarter-hours (already DST-adjusted by the
+  // network). We parse <zz> and convert local -> UTC so the RTC/status timestamps are true UTC
+  // (a missing <zz> would leave the old local-as-UTC skew, so require it before syncing).
+  // Best-effort: on OK or FAIL the caller proceeds either way (RTC stays unset if no time).
   AtRes r = atTick("AT+QLTS=2", "+QLTS:", T_CFG);
   if (r == AT_OK) {
     char* p = strstr(_line, "+QLTS:");
     char* q = p ? strchr(p, '"') : nullptr;
     if (q) {
-      int Y, Mo, D, H, Mi, S;
-      if (sscanf(q + 1, "%d/%d/%d,%d:%d:%d", &Y, &Mo, &D, &H, &Mi, &S) == 6 && Y > 2020) {
-        uint32_t epoch = utc_to_epoch(Y, Mo, D, H, Mi, S);
+      int Y, Mo, D, H, Mi, S, tz;
+      // <zz> immediately follows ss with its sign as the separator (e.g. "...:47-20").
+      if (sscanf(q + 1, "%d/%d/%d,%d:%d:%d%d", &Y, &Mo, &D, &H, &Mi, &S, &tz) == 7 && Y > 2020) {
+        // local = GMT + tz*15min  =>  UTC = local - tz*15min.
+        uint32_t epoch = utc_to_epoch(Y, Mo, D, H, Mi, S) - (int32_t)tz * 15 * 60;
         if (_time_cb) _time_cb(_time_ctx, epoch);
       }
     }
