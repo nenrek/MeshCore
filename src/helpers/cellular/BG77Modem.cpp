@@ -383,16 +383,20 @@ void BG77Modem::setCommandTopic(const char* topic) {
   else _cmd_topic[0] = 0;
 }
 
-// Parse a "+QMTRECV: <idx>,<mid>,<topic>,<len>,<payload>" URC (recv/mode 0, msg_len on) and
-// hand the payload to the bridge. Quectel quotes <topic> and <payload>; <len> is the byte
-// count. We locate the last two commas structurally rather than trusting the payload to be
-// comma-free, using <len> to bound the copy.
+// Parse a "+QMTRECV: <idx>,<mid>,"<topic>"[,<len>],"<payload>"" URC and hand the payload to
+// the bridge. Quectel quotes <topic> and <payload>. The <len> field is only present when
+// recv/mode msg_len is enabled — and that QMTCFG is NOT reliably honored on the BG77 (it
+// errors when issued on an already-open client), so the modem often omits <len> entirely
+// (delivering `<idx>,<mid>,"<topic>","<payload>"`). Locate the payload STRUCTURALLY as the
+// final quoted field so we parse both forms: the payload opens at the first quote after the
+// topic and closes at the last quote on the line. Because the wrapper quotes bracket the whole
+// payload, any quotes/commas inside the JSON body are naturally contained.
 void BG77Modem::parseRecvUrc(char* line) {
   if (!_recv_cb) return;
   char* p = strstr(line, "+QMTRECV:");
   if (!p) return;
   p += 9;
-  // fields: ,<idx> ,<mid> ,"<topic>" ,<len> ,"<payload>"
+  // fields: ,<idx> ,<mid> ,"<topic>" [,<len>] ,"<payload>"
   char* c1 = strchr(p, ',');            if (!c1) return;   // after idx
   char* c2 = strchr(c1 + 1, ',');       if (!c2) return;   // after mid -> topic starts
   char* topic = c2 + 1;
@@ -400,19 +404,15 @@ void BG77Modem::parseRecvUrc(char* line) {
   bool tq = (*topic == '"'); if (tq) topic++;
   char* tend = tq ? strchr(topic, '"') : strchr(topic, ',');
   if (!tend) return;
-  char* after_topic = tq ? tend + 1 : tend;               // at the comma before <len>
-  char* clen = strchr(after_topic, ',');  if (!clen) return;
-  int len = atoi(clen + 1);
-  char* cpay = strchr(clen + 1, ',');     if (!cpay) return;
-  char* payload = cpay + 1;
-  while (*payload == ' ') payload++;
-  if (*payload == '"') payload++;
-  if (len < 0) len = 0;
-  if (len > (int)strlen(payload)) len = (int)strlen(payload);  // clamp to what we actually have
+  // Payload = last quoted field. Skip any <len> (with or without it, the next quote after the
+  // topic opens the payload); the last quote on the line closes it.
+  char* pstart = strchr(tend + 1, '"');   if (!pstart) return;   // opening wrapper quote
+  pstart++;                                                      // -> payload bytes
+  char* pend = strrchr(pstart, '"');      if (!pend || pend <= pstart) return;  // closing wrapper
   *tend = 0;                                              // terminate topic in place
-  char saved = payload[len]; payload[len] = 0;            // terminate payload at <len>
-  _recv_cb(_recv_ctx, topic, payload, len);
-  payload[len] = saved;
+  char saved = *pend; *pend = 0;                          // terminate payload in place
+  _recv_cb(_recv_ctx, topic, pstart, (int)(pend - pstart));
+  *pend = saved;
 }
 
 void BG77Modem::enterBackoff(const char* why) {
