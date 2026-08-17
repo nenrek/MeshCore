@@ -63,6 +63,7 @@ public:
   );
 
   static int buildRawMessage(
+    JsonDocument& doc,
     const char* origin,
     const char* origin_id,
     const char* timestamp,
