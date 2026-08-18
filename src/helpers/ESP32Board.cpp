@@ -210,7 +210,7 @@ bool ESP32Board::otaFromManifestImpl(const char* current_ver, bool dry_run, char
       rootca_crt_bundle_end > rootca_crt_bundle_start) {
     bundle_len = (size_t)(rootca_crt_bundle_end - rootca_crt_bundle_start);
   }
-  if (!dry_run && bundle_len == 0) {
+  if (bundle_len == 0) {
     strcpy(reply, "ERR: no embedded cert bundle");
     return false;
   }
@@ -222,37 +222,22 @@ bool ESP32Board::otaFromManifestImpl(const char* current_ver, bool dry_run, char
   HTTPClient http;
   WiFiClientSecure mclient;  // only used for the HTTPS (update) path
 
-  if (dry_run) {
-    // `ota check`: fetch over PLAIN HTTP. With no TLS handshake the fetch costs
-    // negligible heap, so the check runs with the MQTT bridge UP even on no-PSRAM
-    // — where the cert-bundle TLS verify would otherwise exhaust internal heap
-    // alongside the two live MQTT TLS sessions (free heap collapses to a few KB
-    // and the handshake + the bridge both fail). This only reads version info; the
-    // firmware download below (ota update) is always TLS-verified. Requires the
-    // manifest host to serve /v over HTTP (no forced HTTPS redirect).
-    if (strncmp(OTA_MANIFEST_BASE, "https://", 8) == 0) {
-      snprintf(murl, sizeof(murl), "http://%s/%s.json", OTA_MANIFEST_BASE + 8, OTA_VARIANT);
-    } else {
-      snprintf(murl, sizeof(murl), "%s/%s.json", OTA_MANIFEST_BASE, OTA_VARIANT);
-    }
-    if (!http.begin(murl)) {
-      strcpy(reply, "ERR: manifest connect failed");
-      return false;
-    }
-  } else {
-    // `ota update`: HTTPS. The bridge is torn down for an update so heap is free,
-    // and integrity matters because we're about to flash.
+  // mw: HTTPS-only OTA channel. Both the `ota check` dry-run and the real `ota
+  // update` fetch the slim ~180-byte manifest over TLS with the embedded cert
+  // bundle. (Upstream fetched the dry-run manifest over plain HTTP to save heap
+  // while the bridge is up and required the host to serve /v over HTTP with no
+  // forced HTTPS redirect; our channel is HTTPS-only, and the manifest is a single
+  // small TLS fetch.) The firmware download below is HTTPS regardless.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
-    mclient.setCACertBundle(rootca_crt_bundle_start, bundle_len);
+  mclient.setCACertBundle(rootca_crt_bundle_start, bundle_len);
 #else
-    mclient.setCACertBundle(rootca_crt_bundle_start);
+  mclient.setCACertBundle(rootca_crt_bundle_start);
 #endif
-    mclient.setTimeout(15000);
-    snprintf(murl, sizeof(murl), "%s/%s.json", OTA_MANIFEST_BASE, OTA_VARIANT);
-    if (!http.begin(mclient, murl)) {
-      strcpy(reply, "ERR: manifest connect failed");
-      return false;
-    }
+  mclient.setTimeout(15000);
+  snprintf(murl, sizeof(murl), "%s/%s.json", OTA_MANIFEST_BASE, OTA_VARIANT);
+  if (!http.begin(mclient, murl)) {
+    strcpy(reply, "ERR: manifest connect failed");
+    return false;
   }
 
   if (!dry_run) { Serial.print("OTA: checking manifest "); Serial.println(murl); }

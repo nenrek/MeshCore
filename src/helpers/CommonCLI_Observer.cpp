@@ -1090,8 +1090,8 @@ bool CommonCLI::handleObserverCommand(uint32_t sender_timestamp, char* command, 
       // the live MQTT sessions even on no-PSRAM boards. No bridge bounce needed.
       _board->otaFromManifest(_callbacks->getFirmwareVer(), true, reply);
     } else {
-      // `ota update`: cheap pre-check first (plain HTTP, bridge stays up). Only
-      // schedule the real update — which tears the bridge down, flashes, and
+      // `ota update`: cheap pre-check first (HTTPS manifest fetch, bridge stays up).
+      // Only schedule the real update — which tears the bridge down, flashes, and
       // reboots — when an applicable build actually exists. otaFromManifest(dry)
       // returns true iff so; otherwise it leaves the explanation (up to date /
       // cable flash / error) in reply, which we send without disturbing the
