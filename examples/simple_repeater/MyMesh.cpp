@@ -1572,6 +1572,11 @@ static bool remoteCommandAllowed(const char* cmd) {
   while (*cmd == ' ') cmd++;
   if (strncmp(cmd, "get ", 4) == 0) return true;
   if (strcmp(cmd, "cell.status") == 0) return true;
+  // Phase 7: remote nRF52 app-OTA is the intended deploy path — explicitly allowed
+  // ahead of the "ota"/"firmware" denylist below (which otherwise blocks it). Still
+  // gated by the downlink's fleet-user auth + replay guard, and the bootloader
+  // CRC-validates the fetched image, so a bad/rogue URL can't flash a corrupt app.
+  if (strncmp(cmd, "nrf ota ", 8) == 0) return true;
   static const char* const denied[] = {
     "cell.pass", "password", "admin", "erase", "format",
     "ota", "firmware", "import", "export", "identity", "factory"
