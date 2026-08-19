@@ -283,6 +283,14 @@ public:
     return false;
   };
 
+  // Phase 7: schedule a remote nRF52 UART-DFU (the companion ESP32 downloads the
+  // nRF52 firmware from `base_url` and hosts the flash over Serial1), run from the
+  // app loop shortly after the CLI ack transmits. Returns true if scheduled.
+  virtual bool beginDeferredNrfDfu(const char* base_url) {
+    (void)base_url;
+    return false;
+  };
+
   virtual int getQueueSize() {
     return 0; // no op by default
   };

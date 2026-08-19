@@ -11,6 +11,7 @@
 #include "MyMesh.h"
 #if defined(ESP32)
   #include "esp_task_wdt.h"   // flag-gated loop watchdog (`set wdt on`)
+  #include "helpers/nrf52/Nrf52DfuHost.h"   // Phase 7: nRF52 OTA over the inter-chip UART
 #endif
 
 #ifdef DISPLAY_CLASS
@@ -149,6 +150,26 @@ void loop() {
     char hreply[160]; hreply[0] = 0;
     the_mesh.handleCommand(0, hcmd, hreply);
     radio_driver.sendHostReply(hreply[0] ? hreply : "OK");
+  }
+
+  // Phase 7 nRF52-OTA (nRF52-driven): the nRF52 sent "MCPULL <baseUrl>" (its own
+  // `nrf.dfu` command). Download the firmware, reply MCPULLED (nRF52 then resets into
+  // the bootloader), and flash it over Serial1. Blocking — the nRF52 is in the
+  // bootloader for the duration, so the normal UART link is idle anyway.
+  if (radio_driver.hasDfuPull()) {
+    char url[160]; radio_driver.takeDfuPull(url, sizeof(url));
+    nrf52dfu::runDfuPull(Serial1, url);
+  }
+
+  // Phase 7 nRF52-OTA (REMOTE / MQTT-triggered): a fleet-control `nrf ota <baseUrl>`
+  // downlink scheduled a deferred DFU (beginDeferredNrfDfu). When it's due, download
+  // the firmware and host the flash over Serial1 — the nRF52 is in its normal loop and
+  // enters DFU on the unsolicited "MCDFUNOW" line. Blocking; the nRF52 is offline for it.
+  {
+    char durl[160];
+    if (the_mesh.takeNrfDfuDue(durl, sizeof(durl))) {
+      nrf52dfu::runDfuRemote(Serial1, durl);
+    }
   }
 
   // Radio config pushed from the nRF52 (it owns the radio). Drop it into the

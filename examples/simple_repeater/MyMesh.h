@@ -130,6 +130,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
   CayenneLPP telemetry;
   unsigned long set_radio_at, revert_radio_at;
   unsigned long _ota_update_at = 0;  // deferred `ota update` fire time (0 = none scheduled)
+  unsigned long _nrf_dfu_at = 0;     // Phase 7: deferred remote nRF52-DFU fire time (0 = none)
+  char _nrf_dfu_url[160] = {0};      // Phase 7: base URL for the deferred nRF52-DFU
   float pending_freq;
   float pending_bw;
   uint8_t pending_sf;
@@ -472,6 +474,27 @@ public:
     // alert queued at fire time could never transmit. See otaAlert().
     otaAlert("OTA update starting");
 #endif
+    return true;
+  }
+
+  // Phase 7: schedule the remote nRF52 UART-DFU to run from loop() in ~2.5 s, leaving
+  // time for the CLI ack to transmit before the blocking flash. Executed in the app
+  // loop (mqtt_uplink) via takeNrfDfuDue(), which owns Serial1 + the DFU host.
+  bool beginDeferredNrfDfu(const char* base_url) override {
+    if (!base_url || !base_url[0]) return false;
+    strncpy(_nrf_dfu_url, base_url, sizeof(_nrf_dfu_url) - 1);
+    _nrf_dfu_url[sizeof(_nrf_dfu_url) - 1] = 0;
+    _nrf_dfu_at = millis() + 2500;
+    if (_nrf_dfu_at == 0) _nrf_dfu_at = 1;
+    return true;
+  }
+
+  // Phase 7: app loop polls this; returns true (and copies the base URL) once the
+  // deferred nRF52-DFU is due, clearing the schedule. Then the caller runs the flash.
+  bool takeNrfDfuDue(char* out, int n) {
+    if (_nrf_dfu_at == 0 || !millisHasNowPassed(_nrf_dfu_at)) return false;
+    _nrf_dfu_at = 0;
+    strncpy(out, _nrf_dfu_url, n - 1); out[n - 1] = 0;
     return true;
   }
 

@@ -1131,6 +1131,23 @@ bool CommonCLI::handleObserverCommand(uint32_t sender_timestamp, char* command, 
     strcpy(reply, "ERR: online OTA not supported on this build");
 #endif
     return true;
+  } else if (memcmp(command, "nrf ota ", 8) == 0) {
+    // Phase 7: remote nRF52 (companion radio) UART-DFU. `nrf ota <baseUrl>` — this
+    // ESP32 downloads <baseUrl>.bin + <baseUrl>.dat and hosts the flash to the nRF52
+    // over Serial1. Deferred so this ack transmits first (the flash blocks the loop).
+    // Distinct from `ota update` (which updates THIS ESP32's own firmware).
+    const char* url = &command[8];
+    while (*url == ' ') url++;
+    if (WiFi.status() != WL_CONNECTED) {
+      strcpy(reply, "ERR: WiFi not connected");
+    } else if (url[0] == 0) {
+      strcpy(reply, "ERR: usage nrf ota <baseUrl>");
+    } else if (_callbacks->beginDeferredNrfDfu(url)) {
+      strcpy(reply, "nRF52 DFU scheduled; node flashes over Serial1 (~60-120s). Check nRF52 'ver' after.");
+    } else {
+      strcpy(reply, "ERR: nRF52 remote DFU not supported on this build");
+    }
+    return true;
   } else if (memcmp(command, "start webconfig", 15) == 0 && (command[15] == 0 || command[15] == ' ')) {
     // Web config portal: `start webconfig` binds to the LAN IP (or raises the
     // setup AP when WiFi is unconfigured); `start webconfig ap` forces the AP.

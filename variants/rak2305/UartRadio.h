@@ -38,6 +38,8 @@ class UartRadio : public mesh::Radio {
   uint32_t _rx_count = 0;        // frames handed to the stack (for stats)
   char     _cmd[160];            // a relayed CLI command from the nRF52 (MCCMD)
   bool     _have_cmd = false;
+  char     _dfu_url[160];        // Phase 7: nRF52 OTA base URL (MCPULL)
+  bool     _have_dfu = false;
   float    _r_freq = 0, _r_bw = 0;   // radio config pushed by the nRF52 (MCRADIO)
   uint8_t  _r_sf = 0, _r_cr = 0;
   bool     _have_radio = false;
@@ -124,6 +126,16 @@ class UartRadio : public mesh::Radio {
       strncpy(_cmd, _line + 6, sizeof(_cmd) - 1);
       _cmd[sizeof(_cmd) - 1] = 0;
       _have_cmd = true;
+      return;
+    }
+    // Phase 7 nRF52-OTA: the nRF52 asks us to fetch a firmware + host its UART DFU.
+    // "MCPULL <baseUrl>" -> stashed; the main loop downloads, replies MCPULLED (which
+    // makes the nRF52 enterUartDfu), then drives the DFU. nRF52-driven so the reset
+    // timing is ours-then-theirs (no race with the MCCMD/MCRSP relay).
+    if (strncmp(_line, "MCPULL ", 7) == 0) {
+      strncpy(_dfu_url, _line + 7, sizeof(_dfu_url) - 1);
+      _dfu_url[sizeof(_dfu_url) - 1] = 0;
+      _have_dfu = true;
       return;
     }
     if (strncmp(_line, "MCPKT ", 6) != 0) return;     // ignore anything else
@@ -222,6 +234,12 @@ public:
   void sendHostReply(const char* s) {
     if (!_uart) return;
     _uart->print("MCRSP "); _uart->print(s); _uart->print("\r\n");
+  }
+
+  // ---- Phase 7 nRF52-OTA pull (nRF52-driven) ----
+  bool hasDfuPull() const { return _have_dfu; }
+  void takeDfuPull(char* dst, int n) {
+    strncpy(dst, _dfu_url, n - 1); dst[n - 1] = 0; _have_dfu = false;
   }
 
   // ---- info pushed from the nRF52 (so the two act as one logical device) ----
