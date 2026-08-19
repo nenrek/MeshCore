@@ -184,6 +184,11 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
 void CommonCLI::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
     if (memcmp(command, "poweroff", 8) == 0 || memcmp(command, "shutdown", 8) == 0) {
       _board->powerOff();  // doesn't return
+    } else if (memcmp(command, "reboot uartdfu", 14) == 0) {
+      // Phase 7 nRF52-OTA: drop into the bootloader's UART serial-DFU mode (GPREGRET 0x4f) so a
+      // host (ESP32 / USB-TTL over Serial1) can flash the app via `adafruit-nrfutil dfu serial`.
+      // Needs the dual-backend OTAFIX bootloader; a normal reboot on other boards.
+      _board->enterUartDfu();  // doesn't return on nRF52
     } else if (memcmp(command, "reboot", 6) == 0) {
       _board->reboot();  // doesn't return
     } else if (memcmp(command, "wdt test", 8) == 0) {

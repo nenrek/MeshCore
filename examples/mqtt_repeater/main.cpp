@@ -177,7 +177,14 @@ void loop() {
     char reply[160];
     reply[0] = 0;
     // Intercept wifi/mqtt commands before handing off to the mesh CLI.
-    if (strcmp(command, "uart scan") == 0) {
+    if (strncmp(command, "nrf.dfu ", 8) == 0) {
+      // Phase 7 nRF52-OTA (WiFi path, nRF52-driven): have the ESP32 fetch
+      // <baseUrl>.bin/.dat and host our UART DFU. triggerRemoteDfu() sends MCPULL, waits
+      // for the ESP32's MCPULLED, then resets us into the bootloader (no return on success).
+      Serial.println("  -> nrf.dfu: staging via ESP32 (download, then reset to UART DFU)...");
+      bool ok = mqtt.triggerRemoteDfu(command + 8);
+      Serial.println(ok ? "  -> nrf.dfu: OK" : "  -> nrf.dfu: FAILED (download/timeout)");
+    } else if (strcmp(command, "uart scan") == 0) {
       // Empirically find which GPIOs reach the base-board header/slot UART nets.
       // With a jumper across the header TXD1<->RXD1, the connected pair reports.
       // Without a jumper, 'uart idle' (below) finds the ESP's idle-high TX line.

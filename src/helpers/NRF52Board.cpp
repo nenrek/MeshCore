@@ -434,6 +434,24 @@ bool NRF52Board::getBootloaderVersion(char* out, size_t max_len) {
     return false;
 }
 
+void NRF52Board::enterUartDfu() {
+    // Phase 7 nRF52-OTA: set the UART-DFU GPREGRET magic and reset into the bootloader's UART
+    // serial-DFU mode (app_uart on Serial1) so a host (ESP32 / USB-TTL) can flash the app via
+    // `adafruit-nrfutil dfu serial`. The Adafruit core ::enterSerialDfu() sets 0x4e (USB-CDC)
+    // instead, so we set the magic ourselves (mirrors the core reset_mcu()). 0x4f must match
+    // DFU_MAGIC_UART_DFU in the dual-backend OTAFIX bootloader's main.c. Does not return.
+    sd_softdevice_disable();
+    NVIC->ICER[0] = 0xFFFFFFFF;
+    NVIC->ICPR[0] = 0xFFFFFFFF;
+#if defined(__NRF_NVIC_ISER_COUNT) && (__NRF_NVIC_ISER_COUNT == 2)
+    NVIC->ICER[1] = 0xFFFFFFFF;
+    NVIC->ICPR[1] = 0xFFFFFFFF;
+#endif
+    NRF_POWER->GPREGRET = 0x4f;   // DFU_MAGIC_UART_DFU
+    NVIC_SystemReset();
+    while (1) { }
+}
+
 bool NRF52Board::startOTAUpdate(const char *id, char reply[]) {
   // Config the peripheral connection with maximum bandwidth
   // more SRAM required by SoftDevice

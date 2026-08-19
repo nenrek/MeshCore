@@ -52,6 +52,10 @@ public:
   virtual void onBeforeTransmit() { }
   virtual void onAfterTransmit() { }
   virtual void reboot() = 0;
+  // Reboot into the bootloader's UART serial-DFU mode (Phase 7 nRF52-OTA) so a host (ESP32 /
+  // USB-TTL over Serial1) can flash the app. Only meaningful on nRF52 with the dual-backend
+  // OTAFIX bootloader; default falls back to a normal reboot.
+  virtual void enterUartDfu() { reboot(); }
   virtual void powerOff() { /* no op */ }
   // Called by example setup() functions to signal that boot is complete.
   // Boards may override to stop a boot-indicator LED sequence or similar.

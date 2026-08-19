@@ -57,6 +57,7 @@ public:
   virtual uint8_t getStartupReason() const override { return startup_reason; }
   virtual float getMCUTemperature() override;
   virtual void reboot() override { NVIC_SystemReset(); }
+  virtual void enterUartDfu() override;  // Phase 7: reset into the bootloader's UART serial-DFU (GPREGRET magic 0x4f)
   virtual void shutdownPeripherals();
   virtual void powerOff() override;
   virtual bool getBootloaderVersion(char* version, size_t max_len) override;

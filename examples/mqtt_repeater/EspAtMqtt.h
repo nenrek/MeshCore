@@ -488,6 +488,33 @@ public:
     if (!_at) return;
     _at->print("MCCMD "); _at->print(cmd); _at->print("\r\n");
   }
+  // Phase 7 nRF52-OTA (WiFi path, nRF52-driven): ask the ESP32 to fetch <baseUrl>.bin/.dat
+  // and host our UART DFU. Send MCPULL, then wait — with a DEDICATED read, so it can't be
+  // eaten by the MCCMD/MCRSP relay — for the ESP32's MCPULLED, at which point we reset into
+  // the bootloader's UART serial-DFU (enterUartDfu, does NOT return) and the ESP32 flashes
+  // us over Serial1. MCPULLFAIL or timeout -> return false, we stay on the running app.
+  bool triggerRemoteDfu(const char* url) {
+    if (!_at) return false;
+    _at->print("MCPULL "); _at->print(url); _at->print("\r\n"); _at->flush();
+    char ln[24]; int li = 0;
+    unsigned long start = millis();
+    while ((unsigned long)(millis() - start) < 120000UL) {   // ESP32 download may take a while
+      while (_at->available()) {
+        char c = (char)_at->read();
+        if (c == '\n' || c == '\r') {
+          if (li > 0) {
+            ln[li] = 0;
+            if (strncmp(ln, "MCPULLED", 8) == 0)   { board.enterUartDfu(); return true; }  // no return
+            if (strncmp(ln, "MCPULLFAIL", 10) == 0) return false;
+            li = 0;
+          }
+        } else if (li < (int)sizeof(ln) - 1) { ln[li++] = c; }
+        else li = 0;
+      }
+      delay(2);
+    }
+    return false;   // timeout
+  }
   // freq in MHz, bw in kHz, sf, cr — for the /status "radio" field (Beacon
   // wants exactly "freq,bw,sf,cr" or it skips the radio info).
   void setRadio(float freq, float bw, uint8_t sf, uint8_t cr) {
@@ -656,6 +683,13 @@ public:
             if (_rtc && strncmp(trl, "MCTIME ", 7) == 0) {
               uint32_t epoch = (uint32_t)strtoul(trl + 7, nullptr, 10);
               if (epoch > 1735689600UL) _rtc->setCurrentTime(epoch);
+            }
+            // Remote (MQTT-triggered) nRF52 OTA: the ESP32 downloaded our new firmware
+            // and is ready to host the UART DFU. Reset into the bootloader; the ESP32
+            // then drives the flash over Serial1. Unsolicited (no prior MCPULL from us),
+            // so it's handled here in the normal loop, not the trigger read.
+            else if (strncmp(trl, "MCDFUNOW", 8) == 0) {
+              board.enterUartDfu();                     // does not return
             }
             trli = 0;
           }
