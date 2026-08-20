@@ -173,6 +173,24 @@ void NRF52Board::enterSystemOff(uint8_t reason) {
   NVIC_SystemReset();
 }
 
+// Phase 7 (cell OTA): set the bootloader's cell-DFU magic in GPREGRET (index 0 — index 1 /
+// GPREGRET2 is our shutdown-reason store) and reset. The bootloader then pulls the new app
+// image from the BG77 modem's UFS over AT and flashes it. Must match DFU_MAGIC_CELL_DFU (0x50)
+// in the OTAFIX bootloader's main.c. GPREGRET is SD-preserved across the reset.
+void NRF52Board::enterCellDfu() {
+  uint8_t sd_enabled = 0;
+  sd_softdevice_is_enabled(&sd_enabled);
+  if (sd_enabled) {
+    sd_power_gpregret_clr(0, 0xFF);
+    sd_power_gpregret_set(0, 0x50);
+  } else {
+    NRF_POWER->GPREGRET = 0x50;
+  }
+  Serial.flush();
+  delay(100);
+  NVIC_SystemReset();
+}
+
 void NRF52Board::configureVoltageWake(uint8_t ain_channel, uint8_t refsel) {
   // LPCOMP is not managed by SoftDevice - direct register access required
   // Halt and disable before reconfiguration

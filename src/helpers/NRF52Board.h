@@ -50,6 +50,7 @@ public:
   virtual uint8_t getStartupReason() const override { return startup_reason; }
   virtual float getMCUTemperature() override;
   virtual void reboot() override { NVIC_SystemReset(); }
+  virtual void enterCellDfu() override;   // Phase 7 (cell OTA): reboot into bootloader cell-DFU
   virtual void shutdownPeripherals();
   virtual void powerOff() override;
   virtual bool getBootloaderVersion(char* version, size_t max_len) override;

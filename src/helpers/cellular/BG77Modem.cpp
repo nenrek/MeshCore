@@ -686,3 +686,97 @@ bool BG77Modem::uploadCACert(const char* name, const char* pem, size_t pem_len) 
   // Success line: +QFUPL: <uploaded_len>,<checksum>
   return waitFor("+QFUPL:", 20000);
 }
+
+// HTTP-GET one URL straight into a UFS file. AT+QHTTPURL takes the URL in a CONNECT data
+// phase; AT+QHTTPREADFILE then downloads to UFS and blocks until +QHTTPREADFILE: <err>
+// (0 = success). Used by otaDownload() below.
+bool BG77Modem::httpToUfs(const char* url, const char* ufsName) {
+  char cmd[96];
+  snprintf(cmd, sizeof(cmd), "AT+QFDEL=\"%s\"", ufsName);
+  sendExpect(cmd, "OK", T_CFG);                       // ok if it didn't exist
+
+  // Set the target URL (length-prefixed data phase).
+  snprintf(cmd, sizeof(cmd), "AT+QHTTPURL=%u,30", (unsigned)strlen(url));
+  flushInput();
+  sendAT(cmd);
+  if (!waitFor("CONNECT", T_CFG)) return false;
+  sendRaw(url);
+  if (!waitFor("OK", T_CFG)) return false;
+
+  // Perform the GET first — QHTTPREADFILE only SAVES the response of a prior request, it
+  // doesn't fetch. Blocks until +QHTTPGET: <err>,<httpcode>,<len> (err 0 + code 200 = ok).
+  flushInput();
+  sendAT("AT+QHTTPGET=80");
+  if (!waitFor("+QHTTPGET: 0,200", 90000)) return false;
+
+  // Save the response body to UFS. +QHTTPREADFILE: 0 = success.
+  snprintf(cmd, sizeof(cmd), "AT+QHTTPREADFILE=\"%s\",80", ufsName);
+  flushInput();
+  sendAT(cmd);
+  return waitFor("+QHTTPREADFILE: 0", 90000);
+}
+
+bool BG77Modem::otaDownload(const char* baseUrl) {
+  if (!baseUrl || !baseUrl[0]) return false;
+  char url[160];
+  char cmd[96];
+
+  // Take exclusive control of the modem: holdForGnss() closes the MQTT session (QMTDISC/
+  // QMTCLOSE — releasing PDP context 1) and parks the bridge state machine so its backoff
+  // loop can't thrash the context or DNS mid-download. resumeFromGnss() hands it back after.
+  holdForGnss();
+
+  // Clean-activate PDP context 1. QIDEACT clears any half-activated/MQTT-held state (QIACT
+  // returns ERROR on a context still held by MQTT); then QICSGP defines it and QIACT brings
+  // it up. The HTTP client needs an explicit DNS server or GET fails with "Http DNS error".
+  sendExpect("AT+QIDEACT=1", "OK", 30000);
+  snprintf(cmd, sizeof(cmd), "AT+QICSGP=1,1,\"%s\",\"\",\"\",1", _apn);
+  sendExpect(cmd, "OK", T_CFG);
+  bool ctx = sendExpect("AT+QIACT=1", "OK", 30000);
+  // Use the network-assigned DNS — do NOT force 8.8.8.8: the Hologram APN firewalls public
+  // resolvers, so an override makes QHTTPGET fail with "Http DNS error".
+
+  bool ok = false;
+  if (ctx) {
+    // HTTP(S) client config: PDP context 1, no response headers to UFS, an HTTPS SSL context
+    // (id 3, separate from MQTT's) at seclevel 0 = no cert verification (matches the fleet's
+    // TLS-noverify posture; the image is CRC-checked by the bootloader).
+    sendExpect("AT+QHTTPCFG=\"contextid\",1", "OK", T_CFG);
+    sendExpect("AT+QHTTPCFG=\"responseheader\",0", "OK", T_CFG);
+    sendExpect("AT+QHTTPCFG=\"sslctxid\",3", "OK", T_CFG);
+    sendExpect("AT+QSSLCFG=\"sslversion\",3,4", "OK", T_CFG);   // TLS 1.2
+    sendExpect("AT+QSSLCFG=\"ciphersuite\",3,0xFFFF", "OK", T_CFG);
+    sendExpect("AT+QSSLCFG=\"sni\",3,1", "OK", T_CFG);          // SNI — Traefik routes on it
+    sendExpect("AT+QSSLCFG=\"seclevel\",3,0", "OK", T_CFG);     // no auth
+
+    // .dat first (tiny, fast — fails fast if the host/URL is wrong), then the big .bin.
+    snprintf(url, sizeof(url), "%s.dat", baseUrl);
+    if (httpToUfs(url, "otaapp.dat")) {
+      snprintf(url, sizeof(url), "%s.bin", baseUrl);
+      ok = httpToUfs(url, "otaapp.bin");
+    }
+  }
+
+  resumeFromGnss();   // hand the modem back to the MQTT bring-up
+  return ok;
+}
+
+bool BG77Modem::pingHost(const char* host) {
+  if (!host || !host[0]) return false;
+  holdForGnss();
+  sendExpect("AT+QIDEACT=1", "OK", 30000);
+  char cmd[96];
+  snprintf(cmd, sizeof(cmd), "AT+QICSGP=1,1,\"%s\",\"\",\"\",1", _apn);
+  sendExpect(cmd, "OK", T_CFG);
+  bool ok = false;
+  if (sendExpect("AT+QIACT=1", "OK", 30000)) {
+    snprintf(cmd, sizeof(cmd), "AT+QPING=1,\"%s\",4,4", host);
+    flushInput();
+    sendAT(cmd);
+    // "+QPING: 0,..." = a reply came back (host resolved + reachable). A DNS failure is
+    // "+QPING: 565"; a timeout "+QPING: 566" — neither contains "+QPING: 0,".
+    ok = waitFor("+QPING: 0,", 30000);
+  }
+  resumeFromGnss();
+  return ok;
+}

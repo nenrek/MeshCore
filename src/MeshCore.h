@@ -52,6 +52,10 @@ public:
   virtual void onBeforeTransmit() { }
   virtual void onAfterTransmit() { }
   virtual void reboot() = 0;
+  // Phase 7 (cell OTA): reboot into the bootloader's cell-DFU mode (GPREGRET magic), where
+  // it pulls the new app image from the BG77 modem's UFS and flashes it. Default = plain
+  // reboot on boards without that bootloader; nRF52 cell nodes override it.
+  virtual void enterCellDfu() { reboot(); }
   virtual void powerOff() { /* no op */ }
   // Called by example setup() functions to signal that boot is complete.
   // Boards may override to stop a boot-indicator LED sequence or similar.

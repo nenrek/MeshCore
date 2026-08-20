@@ -90,6 +90,19 @@ public:
    */
   bool uploadCACert(const char* name, const char* pem, size_t pem_len);
 
+  /**
+   * Phase 7 (cell OTA): download the nRF52 app image + Nordic init packet into the modem's
+   * UFS so the bootloader's cell-DFU can flash them. Fetches <baseUrl>.bin -> "otaapp.bin"
+   * and <baseUrl>.dat -> "otaapp.dat" via AT+QHTTPREADFILE (HTTPS, seclevel 0 = no cert
+   * verify, matching the fleet's TLS-noverify posture). BLOCKING (~tens of seconds); call
+   * from the local console, not the bridge loop. Returns true only if BOTH files land.
+   */
+  bool otaDownload(const char* baseUrl);
+
+  /** Bench diagnostic: QPING `host` (hostname exercises DNS; a dotted IP tests raw data
+   *  only). Returns true if any echo returned. Blocking; local console. */
+  bool pingHost(const char* host);
+
   // ---- GNSS (BG77 integrated GPS/GLONASS/Galileo/BeiDou) ----
   /** Turn the standalone GNSS engine on (AT+QGPS=1). Idempotent. */
   bool gnssEnable();
@@ -132,6 +145,8 @@ private:
   /** Wait for the raw '>' data prompt (QMTPUBEX). Char-level, since the prompt is NOT
    *  newline-terminated and the line-based readLine()/waitFor() would never see it. */
   bool   waitForPrompt(uint32_t timeout_ms);
+  /** HTTP-GET `url` straight into UFS file `ufsName` via AT+QHTTPURL + QHTTPREADFILE. */
+  bool   httpToUfs(const char* url, const char* ufsName);
 
   // bring-up steps ----------------------------------------------------------
   void   powerPulse();

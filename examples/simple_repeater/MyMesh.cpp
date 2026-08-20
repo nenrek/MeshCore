@@ -1759,6 +1759,29 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     // Compact live cellular status — mesh-reachable (for remote bring-up via a companion).
     if (bridge) bridge->formatStatus(reply, 160);
     else strcpy(reply, "Err - no modem");
+  } else if (sender_timestamp == 0 && strcmp(command, "cell.pause") == 0) {
+    // Park the modem bring-up loop (close MQTT, stop the backoff thrash) for clean bench AT
+    // diagnostics via the `at` passthrough. Resume with cell.resume.
+    if (bridge) { bridge->modem().holdForGnss(); strcpy(reply, "OK - modem paused"); }
+    else strcpy(reply, "Err - no modem");
+  } else if (sender_timestamp == 0 && strcmp(command, "cell.resume") == 0) {
+    if (bridge) { bridge->modem().resumeFromGnss(); strcpy(reply, "OK - modem resumed"); }
+    else strcpy(reply, "Err - no modem");
+  } else if (sender_timestamp == 0 && memcmp(command, "cell.ping ", 10) == 0) {
+    // Bench diag: ping a host (name = DNS+data, dotted IP = raw data). Isolates DNS vs data.
+    if (bridge) {
+      bool ok = bridge->modem().pingHost(&command[10]);
+      strcpy(reply, ok ? "OK - reply received" : "Err - no reply (DNS or data down)");
+    } else strcpy(reply, "Err - no modem");
+  } else if (sender_timestamp == 0 && memcmp(command, "cell.otaget ", 12) == 0) {
+    // Phase 7 (cell OTA): download <baseUrl>.bin/.dat into the BG77 UFS (otaapp.bin/.dat) so
+    // the bootloader's cell-DFU can flash them. Local console only; blocks for the download.
+    if (bridge) {
+      bool ok = bridge->modem().otaDownload(&command[12]);
+      strcpy(reply, ok ? "OK - image in UFS; 'reboot celldfu' to flash" : "Err - download failed");
+    } else {
+      strcpy(reply, "Err - no modem");
+    }
 #endif
   } else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
