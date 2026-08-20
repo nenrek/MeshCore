@@ -38,6 +38,8 @@ bool RAK13800EthernetInterface::begin() {
   ETHERNET_SPI_PORT.begin();
   Ethernet.init(ETHERNET_SPI_PORT, PIN_ETHERNET_SS);
 
+  memcpy(_mac, mac, sizeof(_mac));   // keep for deferred DHCP if the link comes up later
+
   // Use static IP if build flags are defined, otherwise DHCP
   #if defined(ETHERNET_STATIC_IP) && defined(ETHERNET_STATIC_GATEWAY) && defined(ETHERNET_STATIC_SUBNET) && defined(ETHERNET_STATIC_DNS)
   IPAddress ip(ETHERNET_STATIC_IP);
@@ -45,30 +47,38 @@ bool RAK13800EthernetInterface::begin() {
   IPAddress subnet(ETHERNET_STATIC_SUBNET);
   IPAddress dns(ETHERNET_STATIC_DNS);
   Ethernet.begin(mac, ip, dns, gateway, subnet);
+  server.begin();
+  _dhcp_up = true;   // static config: no DHCP wait
+  ETHERNET_DEBUG_PRINTLN("Ethernet (static) up; listening on TCP port: %d", ETHERNET_TCP_PORT);
   #else
-  if (Ethernet.begin(mac) == 0) {
-    ETHERNET_DEBUG_PRINTLN("Failed to initialize RAK13800 hardware.");
-    if (Ethernet.hardwareStatus() == EthernetNoHardware) {
-      ETHERNET_DEBUG_PRINTLN("Ethernet hardware not found.");
-    } else if (Ethernet.linkStatus() == LinkOFF) {
-      ETHERNET_DEBUG_PRINTLN("Ethernet cable not connected.");
-    } else {
-      ETHERNET_DEBUG_PRINTLN("DHCP failed for unknown reason.");
-    }
-    return false;
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    ETHERNET_DEBUG_PRINTLN("Ethernet hardware not found.");
+    return false;    // no W5100S chip: ethernet unavailable, but the node still boots
   }
+  // NON-BLOCKING DHCP: only request an address when the PHY link is actually up, so a
+  // missing/unpatched cable can never stall boot — this node also serves BLE/USB, and
+  // the upstream `Ethernet.begin(mac)` blocks (and with no link can hang far past its
+  // DHCP timeout). loop() retries once a cable is plugged in.
+  tryDhcp();
   #endif
 
-  ETHERNET_DEBUG_PRINTLN("Ethernet begin complete");
-  ETHERNET_DEBUG_PRINT_IP("IP Address", Ethernet.localIP());
-  ETHERNET_DEBUG_PRINT_IP("Subnet Mask", Ethernet.subnetMask());
-  ETHERNET_DEBUG_PRINT_IP("Gateway", Ethernet.gatewayIP());
-  ETHERNET_DEBUG_PRINT_IP("DNS", Ethernet.dnsServerIP());
+  return true;   // always succeed so the node boots and the interface is registered
+}
 
-  server.begin();
-  ETHERNET_DEBUG_PRINTLN("listening on TCP port: %d", ETHERNET_TCP_PORT);
-
-  return true;
+// Request DHCP only if the link is up; bounded so a slow server can't hang the node.
+// Idempotent + safe to call repeatedly from loop() until we're up.
+void RAK13800EthernetInterface::tryDhcp() {
+  if (_dhcp_up) return;
+  if (Ethernet.linkStatus() != LinkON) return;   // no cable/link yet -> defer, don't block
+  ETHERNET_DEBUG_PRINTLN("Ethernet link up; requesting DHCP...");
+  if (Ethernet.begin(_mac, 8000, 4000) != 0) {
+    _dhcp_up = true;
+    server.begin();
+    ETHERNET_DEBUG_PRINT_IP("IP Address", Ethernet.localIP());
+    ETHERNET_DEBUG_PRINTLN("listening on TCP port: %d", ETHERNET_TCP_PORT);
+  } else {
+    ETHERNET_DEBUG_PRINTLN("DHCP request failed; will retry");
+  }
 }
 
 int RAK13800EthernetInterface::available() {
@@ -89,8 +99,18 @@ bool RAK13800EthernetInterface::isConnected() const {
 
 void RAK13800EthernetInterface::loop() {
 
+  // Not up yet (no link at boot / cable unplugged): poll for a link and DHCP when it
+  // appears, throttled. Nothing to service until we have an IP + a listening server.
+  if (!_dhcp_up) {
+    if (millis() >= _next_dhcp_try) {
+      _next_dhcp_try = millis() + 3000;
+      tryDhcp();
+    }
+    return;
+  }
+
   Ethernet.maintain();
-  
+
   auto newClient = server.accept();
   if (newClient) {
     IPAddress remoteIp = newClient.remoteIP();
