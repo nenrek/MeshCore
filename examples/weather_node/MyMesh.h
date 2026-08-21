@@ -61,6 +61,7 @@ class MyMesh : public SensorMesh {
   unsigned long _next_nws_poll;
   unsigned long _next_eth_retry;
   bool _poll_requested = false;   // NWS_MANUAL_POLL: only poll on explicit `nws poll`
+  int8_t _wx_state = -1;          // last wxdiag TLS state: -1 unknown, 0 fail, 1 ok (edge-report)
   unsigned long _next_mesh_broadcast;
   unsigned long _next_weekly_announce;
   int  _pending_alert_idx;
@@ -858,14 +859,23 @@ public:
       _polls_total++;
       _nws->setNow(getRTCClock()->getCurrentTime());   // for TLS cert-date validation
       int new_alerts = _nws->pollAlerts();
-      // Report the direct-HTTPS poll result over the mesh (serial on the bench is unreliable).
-      // Read it from a companion on the NWS public channel: meshcore-cli -t <ip> ... .
+      // Report the direct-HTTPS TLS health over the mesh, but ONLY on a state change (first OK
+      // after boot, a new failure, or recovery) — polls run every 2 min, so broadcasting every
+      // poll would spam the shared public channel forever. Read it from a companion on the NWS
+      // public channel: meshcore-cli -t <ip> ... . Severe alerts go out on the separate path.
       {
-        char m[100]; uint32_t t = getRTCClock()->getCurrentTime();
-        if (new_alerts < 0) snprintf(m, sizeof(m), "wxdiag: TLS FAIL t=%lu", (unsigned long)t);
-        else snprintf(m, sizeof(m), "wxdiag: TLS OK alerts=%d t=%lu", new_alerts, (unsigned long)t);
-        sendGroupMsg(NWS_PUB_CHANNEL_KEY, m, 1200);
-        Serial.print("[NWS] mesh-report: "); Serial.println(m);
+        int8_t st = (new_alerts < 0) ? 0 : 1;
+        if (st != _wx_state) {
+          char m[100]; uint32_t t = getRTCClock()->getCurrentTime();
+          if (st == 0) snprintf(m, sizeof(m), "wxdiag: TLS FAIL t=%lu", (unsigned long)t);
+          else snprintf(m, sizeof(m), "wxdiag: TLS OK alerts=%d t=%lu", new_alerts, (unsigned long)t);
+          sendGroupMsg(NWS_PUB_CHANNEL_KEY, m, 1200);
+          _wx_state = st;
+          Serial.print("[NWS] mesh-report(change): "); Serial.println(m);
+        } else {
+          Serial.print("[NWS] poll TLS "); Serial.print(st ? "OK" : "FAIL");
+          Serial.println(" (no wxdiag change)");
+        }
       }
       if (new_alerts < 0) new_alerts = 0;   // -1 = TLS failure; clamp for the logic below
       _display_data.polls_total = _polls_total;
