@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RAK13800_W5100S.h>
+#ifdef NWS_DIRECT_HTTPS
+#include <SSLClient.h>
+#include "nws_trust_anchor.h"   // ISRG Root X1 (+ future roots) — api.weather.gov trust anchor
+#endif
 #include <Dns.h>
 #include <ArduinoJson.h>
 
@@ -59,6 +63,7 @@ enum NWSSeverityLevel : uint8_t {
 class NWSClient {
   EthernetClient _client;
   bool _eth_ready;
+  uint32_t _now = 0;   // current Unix time (fed from the RTC) for TLS cert-date validation
   byte _mac[6];
   NWSAlert _alerts[NWS_MAX_ALERTS];
   int _num_alerts;
@@ -190,34 +195,37 @@ public:
     SPI1.begin();
     Ethernet.init(SPI1, ETH_CS_PIN);
 
-    // NON-BLOCKING DHCP: only request an address when the PHY link is actually up. The stock
-    // Ethernet.begin(mac) does a BLOCKING DHCP that, with no link (cable unplugged), hangs far
-    // past its timeout — and this runs in setup() before the mesh/LoRa starts, so a missing
-    // cable would brick the whole node. Return fast instead; the poll loop retries begin() once
-    // a link appears. (Same fix as the RAK13800 companion interface.)
-    if (Ethernet.linkStatus() != LinkON) {
-      Serial.println("[ETH] No link (cable out?) — deferring DHCP; will retry when link is up.");
-      return false;
-    }
+    // NON-BLOCKING DHCP. The stock Ethernet.begin(mac) does a BLOCKING DHCP that hangs far past
+    // its timeout when there's no link — and this runs in setup() before the mesh/LoRa starts,
+    // so a missing cable would brick the whole node. The fix that matters is the BOUNDED
+    // Ethernet.begin(mac,timeout,resp) below (8s cap). We do NOT gate on linkStatus() here: this
+    // board's W5100S mis-reports it as down even with a cable in, so gating stalls eth forever.
+    // The bounded begin returns fast on real no-link too. loop() retries on a throttle.
+    Serial.print("[ETH] linkStatus="); Serial.print((int)Ethernet.linkStatus());
+    Serial.println("; attempting bounded DHCP...");
     if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded so a slow/absent DHCP can't hang
-      Serial.println("[ETH] DHCP FAILED.");
+      Serial.println("[ETH] DHCP FAILED (no link / no server).");
       return false;
     }
     Serial.print("[ETH] IP:      "); Serial.println(Ethernet.localIP());
     Serial.print("[ETH] Subnet:  "); Serial.println(Ethernet.subnetMask());
     Serial.print("[ETH] Gateway: "); Serial.println(Ethernet.gatewayIP());
-    Serial.print("[ETH] DNS:     "); Serial.println(Ethernet.dnsServerIP());
+    Serial.print("[ETH] DNS(DHCP):"); Serial.println(Ethernet.dnsServerIP());
+    // Use the DHCP-assigned resolver (Firewalla). Do NOT force an external resolver (8.8.8.8):
+    // Firewalla blocks external DNS over port 53, so it just fails.
 
     // If DHCP gave a wrong subnet mask (e.g. /16 instead of /24), the W5100S
     // will try to ARP directly for cross-subnet hosts instead of routing through
     // the gateway. Force /24 to ensure traffic to 192.168.8.x goes via the gateway.
     IPAddress gw = Ethernet.gatewayIP();
     IPAddress forced_subnet(255, 255, 255, 0);
-    if (Ethernet.subnetMask() != forced_subnet) {
-      Serial.println("[ETH] WARNING: Subnet mask not /24, forcing correction...");
-      Ethernet.begin(_mac, Ethernet.localIP(), Ethernet.dnsServerIP(), gw, forced_subnet);
-      Serial.print("[ETH] Subnet corrected: "); Serial.println(Ethernet.subnetMask());
-    }
+    // ALWAYS re-apply the static config with the DHCP-obtained gateway. The bounded DHCP path
+    // doesn't reliably program the W5100S gateway register (GAR), which breaks OFF-subnet
+    // (internet) routing — packets never reach the gateway, so Firewalla sees zero flows —
+    // while ON-subnet (the proxy) still works. This writes IP/DNS/GW/subnet explicitly.
+    Ethernet.begin(_mac, Ethernet.localIP(), Ethernet.dnsServerIP(), gw, forced_subnet);
+    Serial.print("[ETH] Re-applied static: GW="); Serial.print(Ethernet.gatewayIP());
+    Serial.print(" mask="); Serial.println(Ethernet.subnetMask());
 
     _eth_ready = true;
     return true;
@@ -260,11 +268,7 @@ public:
     SPI1.begin();
     Ethernet.init(SPI1, ETH_CS_PIN);
 
-    if (Ethernet.linkStatus() != LinkON) {         // no link -> don't block on DHCP
-      Serial.println("[ETH] Recovery: no link, deferring.");
-      return false;
-    }
-    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded DHCP
+    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded DHCP (no linkStatus gate — see begin())
       Serial.println("[ETH] Recovery DHCP failed.");
       return false;
     }
@@ -276,6 +280,50 @@ public:
   int pollAlerts() {
     if (!_eth_ready) return 0;
     _num_alerts = 0;
+    String body = "";
+#ifdef NWS_DIRECT_HTTPS
+    // Direct HTTPS to api.weather.gov via SSLClient/BearSSL over the W5100S — no proxy.
+    // Heap-allocated (the object is ~20KB with the enlarged record buffer — too big for the
+    // stack). ISRG Root X1 anchors the chain; NWS requires a User-Agent.
+    // ESSENTIAL: the W5100S loses socket state after boot / between uses, which breaks BOTH TCP
+    // and DNS. Hard-reset it before every poll so connectivity + resolution work (proven fix).
+    recover();
+    SSLClient* ssl = new SSLClient(_client, TAs, TAs_NUM, A0, 1, SSLClient::SSL_NONE);
+    if (!ssl) { Serial.println("[NWS] SSLClient alloc failed"); return -1; }
+    // BearSSL validates the cert's notBefore/notAfter against a time. Feed it the node's RTC
+    // (Unix epoch -> BearSSL days-since-0AD / seconds-since-midnight) so date checks pass.
+    if (_now > 100000000UL) ssl->setVerificationTime(_now / 86400UL + 719528UL, _now % 86400UL);
+    ssl->setTimeout(15000);
+    Serial.print("[NWS] TLS connect api.weather.gov:443 ...");
+    if (ssl->connect("api.weather.gov", 443) != 1) {
+      Serial.println(" TLS FAIL"); ssl->stop(); delete ssl; return -1;
+    }
+    Serial.println(" OK. Requesting alerts...");
+    ssl->print("GET /alerts/active?zone="); ssl->print(_zone); ssl->println(" HTTP/1.1");
+    ssl->println("Host: api.weather.gov");
+    ssl->println("User-Agent: (meshcore-weather-node, josh@kernen.us)");
+    ssl->println("Accept: application/geo+json");
+    ssl->println("Connection: close");
+    ssl->println();
+    unsigned long timeout = millis();
+    while (!ssl->available()) {
+      if (millis() - timeout > 15000) { ssl->stop(); delete ssl; return 0; }
+      delay(10);
+    }
+    {
+      bool headers_done = false;
+      while (ssl->available()) {
+        if (!headers_done) {
+          String line = ssl->readStringUntil('\n');
+          if (line == "\r") headers_done = true;
+        } else {
+          char c = ssl->read();
+          if (body.length() < 12288) body += c;
+        }
+      }
+    }
+    ssl->stop(); delete ssl;
+#else
     IPAddress proxy;
     if (!resolveProxy(proxy)) {
       Serial.print("[NWS] DNS resolve FAILED for proxy host: "); Serial.println(_proxy_host);
@@ -324,7 +372,6 @@ public:
       delay(10);
     }
 
-    String body = "";
     bool headers_done = false;
     while (_client.available()) {
       if (!headers_done) {
@@ -336,6 +383,7 @@ public:
       }
     }
     _client.stop();
+#endif
 
     JsonDocument doc;
     if (deserializeJson(doc, body)) return 0;
@@ -387,6 +435,7 @@ public:
   void markAlertSent(int idx) { if (idx >= 0 && idx < _num_alerts) markSent(_alerts[idx].id_hash); }
   void clearSentHistory() { _num_sent = 0; memset(_sent_hashes, 0, sizeof(_sent_hashes)); }
   bool isReady() const { return _eth_ready; }
+  void setNow(uint32_t unix_time) { _now = unix_time; }   // for TLS cert-date validation
   void maintain() { if (_eth_ready) Ethernet.maintain(); }
 
   // Compact header: "[Severe] Winter Storm Warning"

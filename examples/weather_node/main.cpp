@@ -74,6 +74,14 @@ void setup() {
   the_mesh.begin(fs);
   the_mesh.loadNWSPrefs(fs);
 
+  // TLS cert-date validation needs a real clock. No NTP here and mesh time-sync may be absent,
+  // so floor the RTC to a recent build-time epoch if it looks unset/stale. (Once the node gets
+  // real time from the mesh, that's newer and wins.)
+  if (the_mesh.getRTCClock()->getCurrentTime() < 1787000000UL) {   // < ~2026-08-17
+    the_mesh.getRTCClock()->setCurrentTime(1787270400UL);          // ~2026-08-20
+    Serial.println("[TIME] RTC floored to build-time epoch for TLS cert validation");
+  }
+
 #ifdef DISPLAY_CLASS
   if (display.begin()) {
     Serial.println("[DISPLAY] SSD1306 initialized OK");

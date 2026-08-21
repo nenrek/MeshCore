@@ -59,6 +59,8 @@ class MyMesh : public SensorMesh {
   uint8_t  _severe_key[CIPHER_KEY_SIZE];
   char     _severe_hashtag[24];
   unsigned long _next_nws_poll;
+  unsigned long _next_eth_retry;
+  bool _poll_requested = false;   // NWS_MANUAL_POLL: only poll on explicit `nws poll`
   unsigned long _next_mesh_broadcast;
   unsigned long _next_weekly_announce;
   int  _pending_alert_idx;
@@ -87,7 +89,7 @@ public:
          mesh::RTCClock& rtc, mesh::MeshTables& tables)
     : SensorMesh(board, radio, ms, rng, rtc, tables),
       _nws(nullptr), _nws_fs(nullptr),
-      _next_nws_poll(0), _next_mesh_broadcast(0), _next_weekly_announce(0),
+      _next_nws_poll(0), _next_eth_retry(0), _next_mesh_broadcast(0), _next_weekly_announce(0),
       _pending_alert_idx(0), _has_pending_alerts(false),
       _alerts_sent_total(0), _polls_total(0), _last_sent_history_clear(0), _utc_offset(0), _boot_announced(false), _boot_announce_at(0),
       _uk_enabled(false), _uk_port(3001), _uk_interval_ms(300000), _next_uk_push(0), _uk_last_ok(false),
@@ -477,6 +479,7 @@ protected:
 
     if (strcmp(command, "nws poll") == 0) {
       _next_nws_poll = 0;
+      _poll_requested = true;   // NWS_MANUAL_POLL gate
       strcpy(reply, "NWS poll triggered");
       return true;
     }
@@ -800,6 +803,15 @@ public:
   void loop() {
     SensorMesh::loop();
 
+    // If Ethernet isn't up (no cable at boot, or plugged in later), retry the non-blocking
+    // begin() on a throttle so a late link recovers without a reboot. MUST run before the
+    // isReady() guard below — otherwise it's unreachable whenever eth is down.
+    if (_nws && !_nws->isReady() &&
+        (_next_eth_retry == 0 || millisHasNowPassed(_next_eth_retry))) {
+      _next_eth_retry = futureMillis(15000);
+      _nws->begin();
+    }
+
     if (!_nws || !_nws->isReady()) return;
 
     // Clear alert history every 6 hours to allow re-alerting
@@ -834,12 +846,28 @@ public:
     }
 
     // NWS polls
+#ifdef NWS_MANUAL_POLL
+    // Debug/iteration build: never auto-poll (a 30s+ blocking TLS handshake stalls USB and
+    // makes serial flashing impossible). Poll only on an explicit `nws poll`, so the node
+    // stays idle and serial-flashable between tests.
+    if (_poll_requested) {
+      _poll_requested = false;
+#else
     if (_next_nws_poll == 0 || millisHasNowPassed(_next_nws_poll)) {
+#endif
       _polls_total++;
-      // If Ethernet wasn't up at boot (cable plugged in later), retry the non-blocking begin()
-      // so a late link recovers without a reboot. Fast no-op when there's still no link.
-      if (_nws && !_nws->isReady()) _nws->begin();
+      _nws->setNow(getRTCClock()->getCurrentTime());   // for TLS cert-date validation
       int new_alerts = _nws->pollAlerts();
+      // Report the direct-HTTPS poll result over the mesh (serial on the bench is unreliable).
+      // Read it from a companion on the NWS public channel: meshcore-cli -t <ip> ... .
+      {
+        char m[100]; uint32_t t = getRTCClock()->getCurrentTime();
+        if (new_alerts < 0) snprintf(m, sizeof(m), "wxdiag: TLS FAIL t=%lu", (unsigned long)t);
+        else snprintf(m, sizeof(m), "wxdiag: TLS OK alerts=%d t=%lu", new_alerts, (unsigned long)t);
+        sendGroupMsg(NWS_PUB_CHANNEL_KEY, m, 1200);
+        Serial.print("[NWS] mesh-report: "); Serial.println(m);
+      }
+      if (new_alerts < 0) new_alerts = 0;   // -1 = TLS failure; clamp for the logic below
       _display_data.polls_total = _polls_total;
       _display_data.eth_ready = _nws->isReady();
       _display_data.active_alerts = _nws->getNumAlerts();
