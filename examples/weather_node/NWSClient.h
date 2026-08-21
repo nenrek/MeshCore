@@ -190,7 +190,16 @@ public:
     SPI1.begin();
     Ethernet.init(SPI1, ETH_CS_PIN);
 
-    if (Ethernet.begin(_mac) == 0) {
+    // NON-BLOCKING DHCP: only request an address when the PHY link is actually up. The stock
+    // Ethernet.begin(mac) does a BLOCKING DHCP that, with no link (cable unplugged), hangs far
+    // past its timeout — and this runs in setup() before the mesh/LoRa starts, so a missing
+    // cable would brick the whole node. Return fast instead; the poll loop retries begin() once
+    // a link appears. (Same fix as the RAK13800 companion interface.)
+    if (Ethernet.linkStatus() != LinkON) {
+      Serial.println("[ETH] No link (cable out?) — deferring DHCP; will retry when link is up.");
+      return false;
+    }
+    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded so a slow/absent DHCP can't hang
       Serial.println("[ETH] DHCP FAILED.");
       return false;
     }
@@ -251,7 +260,11 @@ public:
     SPI1.begin();
     Ethernet.init(SPI1, ETH_CS_PIN);
 
-    if (Ethernet.begin(_mac) == 0) {
+    if (Ethernet.linkStatus() != LinkON) {         // no link -> don't block on DHCP
+      Serial.println("[ETH] Recovery: no link, deferring.");
+      return false;
+    }
+    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded DHCP
       Serial.println("[ETH] Recovery DHCP failed.");
       return false;
     }

@@ -836,6 +836,9 @@ public:
     // NWS polls
     if (_next_nws_poll == 0 || millisHasNowPassed(_next_nws_poll)) {
       _polls_total++;
+      // If Ethernet wasn't up at boot (cable plugged in later), retry the non-blocking begin()
+      // so a late link recovers without a reboot. Fast no-op when there's still no link.
+      if (_nws && !_nws->isReady()) _nws->begin();
       int new_alerts = _nws->pollAlerts();
       _display_data.polls_total = _polls_total;
       _display_data.eth_ready = _nws->isReady();
