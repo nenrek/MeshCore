@@ -4,6 +4,13 @@
 #include "NWSClient.h"
 #include "MyMesh.h"
 
+// Ethernet bring-up + link management via the upstream RAK13800 interface (PoE-stable).
+// NWSClient just layers HTTPS on the shared global Ethernet this sets up.
+#ifdef ETHERNET_ENABLED
+  #include <helpers/ethernet/EthernetInterface.h>
+  static ETHERNET_CLASS ethernet_interface;
+#endif
+
 #ifdef DISPLAY_CLASS
   #include "UITask.h"
   static UITask ui_task(display);
@@ -14,6 +21,9 @@ SimpleMeshTables tables;
 MyMesh the_mesh(board, radio_driver, *new ArduinoMillis(), fast_rng, rtc_clock, tables);
 NWSClient nws_client;
 static char command[160];
+#ifdef ETHERNET_ENABLED
+static char eth_command[160];   // line buffer for the network (TCP:5000) CLI
+#endif
 
 void halt() { while (1); }
 
@@ -59,14 +69,13 @@ void setup() {
   Serial.println("[SETUP] Radio OK");
   fast_rng.begin(radio_driver.getRngSeed());
 
-  // STEP 5: Ethernet Setup (SPI1)
-  if (!nws_client.begin()) {
-    Serial.println("[SETUP] Ethernet Failed.");
-  } else {
-    // DIAGNOSTIC: Verify local network path
-    nws_client.testGateway();
-    delay(2000);
-  }
+  // STEP 5: Ethernet Setup (SPI1) — upstream RAK13800 interface. begin() always returns true so
+  // the node boots even with no cable; the link + DHCP come up (and retry) in its loop(). This
+  // is the PoE-stable path: reset is never toggled and the chip is never re-inited on retry, so
+  // the PHY stays powered (keeps the 802.3af power signature alive).
+#ifdef ETHERNET_ENABLED
+  ethernet_interface.begin();
+#endif
 
   // STEP 6: Start Node
   sensors.begin();
@@ -120,7 +129,36 @@ void loop() {
   the_mesh.loop();
   sensors.loop();
   rtc_clock.tick();
-  nws_client.maintain();
+#ifdef ETHERNET_ENABLED
+  ethernet_interface.loop();   // link management: brings DHCP up, retries, Ethernet.maintain()
+
+  // Network CLI: a plain-text admin channel over TCP:5000 (connect with `nc <ip> 5000` or a
+  // telnet client and type the same commands as the USB serial CLI: ver, get radio, nws poll...).
+  // The interface's loop() above accepts the client; we read raw bytes and dispatch to handleCommand.
+  if (ethernet_interface.isConnected()) {
+    while (ethernet_interface.available()) {
+      char c = (char)ethernet_interface.read();
+      int len = strlen(eth_command);
+      if (c == '\n' || c == '\r') {
+        if (len > 0) {
+          char reply[160];
+          reply[0] = 0;
+          the_mesh.handleCommand(0, eth_command, reply);
+          if (reply[0]) {
+            const char* pre = "  -> ";
+            ethernet_interface.write((const uint8_t*)pre, 5);
+            ethernet_interface.write((const uint8_t*)reply, strlen(reply));
+            ethernet_interface.write((const uint8_t*)"\r\n", 2);
+          }
+          eth_command[0] = 0;
+        }
+      } else if (len < (int)sizeof(eth_command) - 1) {
+        eth_command[len] = c;
+        eth_command[len + 1] = 0;
+      }
+    }
+  }
+#endif
 #ifdef DISPLAY_CLASS
   ui_task.loop();
 #endif

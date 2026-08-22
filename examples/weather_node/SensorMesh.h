@@ -59,7 +59,7 @@ public:
   const char* getRole() override { return FIRMWARE_ROLE; }
   const char* getNodeName() { return _prefs.node_name; }
   NodePrefs* getNodePrefs() { return &_prefs; }
-  void savePrefs() override { _cli.savePrefs(_fs); }
+  void savePrefs() override;   // impl in .cpp: quiesces the radio around the flash write (PoE/SF7 hang fix)
   bool formatFileSystem() override;
   void sendSelfAdvertisement(int delay_millis, bool flood) override;
   void updateAdvertTimer() override;
@@ -138,6 +138,7 @@ private:
   CommonCLI _cli;
   uint8_t reply_data[MAX_PACKET_PAYLOAD];
   unsigned long dirty_contacts_expiry;
+  bool _prefs_dirty = false;   // deferred prefs flash-write flag (set by savePrefs(), serviced in loop())
   CayenneLPP telemetry;
   TransportKeyStore key_store;
   RegionMap region_map;

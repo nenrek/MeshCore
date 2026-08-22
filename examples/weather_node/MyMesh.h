@@ -485,6 +485,7 @@ protected:
       return true;
     }
 
+
     if (strcmp(command, "nws status") == 0) {
       snprintf(reply, 160, "ETH:%s Polls:%lu Sent:%lu Zone:%s",
         (_nws && _nws->isReady()) ? "OK" : "DOWN",
@@ -804,15 +805,8 @@ public:
   void loop() {
     SensorMesh::loop();
 
-    // If Ethernet isn't up (no cable at boot, or plugged in later), retry the non-blocking
-    // begin() on a throttle so a late link recovers without a reboot. MUST run before the
-    // isReady() guard below — otherwise it's unreachable whenever eth is down.
-    if (_nws && !_nws->isReady() &&
-        (_next_eth_retry == 0 || millisHasNowPassed(_next_eth_retry))) {
-      _next_eth_retry = futureMillis(15000);
-      _nws->begin();
-    }
-
+    // Ethernet link/DHCP (incl. late cable plug-in and recovery) is managed by the RAK13800
+    // interface's loop() in main.cpp — no eth retry needed here. Just wait until it's up.
     if (!_nws || !_nws->isReady()) return;
 
     // Clear alert history every 6 hours to allow re-alerting

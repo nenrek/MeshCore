@@ -707,8 +707,13 @@ SensorMesh::SensorMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Millise
   set_radio_at = revert_radio_at = 0;
   _advert_pending = false;
 
-  // defaults
+  // defaults. NOTE: _prefs is polymorphic (NodePrefs : ConfigSerializer with virtual structure()),
+  // AND its members RadioPrefs/BridgePrefs/GPSPrefs/PowerPrefs/RepeatPrefs/RoomPrefs are too. A
+  // blanket memset NULLs ALL of those vtable pointers, so saveSerial()/loadSerial() virtual calls
+  // jump through null and hang the node (root cause of the settings-save hang). Zero the data, then
+  // placement-new to re-run the ctor and re-establish every vtable pointer (top-level + nested).
   memset(&_prefs, 0, sizeof(_prefs));
+  new (&_prefs) NodePrefs();
   _prefs.airtime_factor = 1.0;
   _prefs.rx_delay_base =   0.0f;  // turn off by default, was 10.0;
   _prefs.tx_delay_factor = 0.5f;   // was 0.25f
@@ -741,6 +746,20 @@ void SensorMesh::begin(FILESYSTEM* fs) {
   _fs = fs;
   // load persisted prefs
   _cli.loadPrefs(_fs);
+
+  // FLEET RADIO ENFORCEMENT: these nodes must run the compiled fleet radio profile
+  // (LORA_FREQ/BW/SF/CR) to be heard by the rest of the mesh. A node that first booted an older
+  // build saved the old default SF8 and went deaf to the SF7 fleet — and `set radio` over this
+  // board's flaky USB-CDC wouldn't stick. Heal any drift from the compiled profile here and
+  // persist it, so a reflash alone corrects a misconfigured node (no manual CLI needed).
+  if (_prefs.freq != (float)LORA_FREQ || _prefs.bw != (float)LORA_BW ||
+      _prefs.sf != (uint8_t)LORA_SF || _prefs.cr != (uint8_t)LORA_CR) {
+    Serial.printf("[RADIO] Healing drift %.3f/%.1f/SF%u/CR%u -> fleet %.3f/%.1f/SF%u/CR%u\n",
+                  _prefs.freq, _prefs.bw, (unsigned)_prefs.sf, (unsigned)_prefs.cr,
+                  (float)LORA_FREQ, (float)LORA_BW, (unsigned)LORA_SF, (unsigned)LORA_CR);
+    _prefs.freq = LORA_FREQ; _prefs.bw = LORA_BW; _prefs.sf = LORA_SF; _prefs.cr = LORA_CR;
+    _cli.savePrefs(_fs);
+  }
 
   acl.load(_fs, self_id);
   region_map.load(_fs);
@@ -789,6 +808,20 @@ bool SensorMesh::formatFileSystem() {
     #error "need to implement file system erase"
     return false;
 #endif
+}
+
+void SensorMesh::savePrefs() {
+  // Quiesce the radio (SX1262 -> standby) around the internal-flash write. Symptom: saving a
+  // setting at runtime hangs the whole node, but the identical save works at boot (before the
+  // radio is started) and on repeaters. The differentiator is an active receiver: at SF7 this
+  // node hears the whole fleet, so DIO RX interrupts fire constantly, and one landing mid
+  // NVMC flash-write wedges the CPU. standby() stops RX/DIO for the ~ms write, then we resume.
+  // DEFERRED: do NOT write flash here. On nRF52 with the S140 SoftDevice, an internal-flash
+  // write (sd_flash) issued synchronously from a command handler hangs the node — it needs a
+  // radio-idle window and stalls. Instead flag it and let loop() do the write from the same
+  // clean point the ACL lazy-write uses (acl.save works there). This also lets the admin ack
+  // go out immediately instead of timing out. (Boot-time heal calls _cli.savePrefs directly.)
+  _prefs_dirty = true;
 }
 
 void SensorMesh::saveIdentity(const mesh::LocalIdentity& new_id) {
@@ -993,5 +1026,12 @@ void SensorMesh::loop() {
   if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {
     acl.save(_fs);
     dirty_contacts_expiry = 0;
+  }
+
+  // Deferred prefs write (set by savePrefs()). Done here — the same clean loop point acl.save()
+  // uses — because a synchronous flash write from a command handler hangs the node (see savePrefs).
+  if (_prefs_dirty) {
+    _prefs_dirty = false;
+    _cli.savePrefs(_fs);
   }
 }

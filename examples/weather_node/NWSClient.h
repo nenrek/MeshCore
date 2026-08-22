@@ -185,51 +185,11 @@ public:
   }
   const char* getZone() const { return _zone; }
 
-  bool begin() {
-    Serial.println("[ETH] Enabling 3.3V rail...");
-    pinMode(34, OUTPUT); digitalWrite(34, HIGH); delay(500);
-    
-    Serial.println("[ETH] Resetting W5100S hardware...");
-    pinMode(ETH_RST_PIN, OUTPUT); digitalWrite(ETH_RST_PIN, LOW); delay(100); digitalWrite(ETH_RST_PIN, HIGH); delay(500);
-
-    SPI1.begin();
-    Ethernet.init(SPI1, ETH_CS_PIN);
-
-    // NON-BLOCKING DHCP. The stock Ethernet.begin(mac) does a BLOCKING DHCP that hangs far past
-    // its timeout when there's no link — and this runs in setup() before the mesh/LoRa starts,
-    // so a missing cable would brick the whole node. The fix that matters is the BOUNDED
-    // Ethernet.begin(mac,timeout,resp) below (8s cap). We do NOT gate on linkStatus() here: this
-    // board's W5100S mis-reports it as down even with a cable in, so gating stalls eth forever.
-    // The bounded begin returns fast on real no-link too. loop() retries on a throttle.
-    Serial.print("[ETH] linkStatus="); Serial.print((int)Ethernet.linkStatus());
-    Serial.println("; attempting bounded DHCP...");
-    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded so a slow/absent DHCP can't hang
-      Serial.println("[ETH] DHCP FAILED (no link / no server).");
-      return false;
-    }
-    Serial.print("[ETH] IP:      "); Serial.println(Ethernet.localIP());
-    Serial.print("[ETH] Subnet:  "); Serial.println(Ethernet.subnetMask());
-    Serial.print("[ETH] Gateway: "); Serial.println(Ethernet.gatewayIP());
-    Serial.print("[ETH] DNS(DHCP):"); Serial.println(Ethernet.dnsServerIP());
-    // Use the DHCP-assigned resolver (Firewalla). Do NOT force an external resolver (8.8.8.8):
-    // Firewalla blocks external DNS over port 53, so it just fails.
-
-    // If DHCP gave a wrong subnet mask (e.g. /16 instead of /24), the W5100S
-    // will try to ARP directly for cross-subnet hosts instead of routing through
-    // the gateway. Force /24 to ensure traffic to 192.168.8.x goes via the gateway.
-    IPAddress gw = Ethernet.gatewayIP();
-    IPAddress forced_subnet(255, 255, 255, 0);
-    // ALWAYS re-apply the static config with the DHCP-obtained gateway. The bounded DHCP path
-    // doesn't reliably program the W5100S gateway register (GAR), which breaks OFF-subnet
-    // (internet) routing — packets never reach the gateway, so Firewalla sees zero flows —
-    // while ON-subnet (the proxy) still works. This writes IP/DNS/GW/subnet explicitly.
-    Ethernet.begin(_mac, Ethernet.localIP(), Ethernet.dnsServerIP(), gw, forced_subnet);
-    Serial.print("[ETH] Re-applied static: GW="); Serial.print(Ethernet.gatewayIP());
-    Serial.print(" mask="); Serial.println(Ethernet.subnetMask());
-
-    _eth_ready = true;
-    return true;
-  }
+  // Ethernet is brought up and kept alive by the upstream RAK13800EthernetInterface (instantiated
+  // in main.cpp): it powers WB_IO2 before main(), never toggles the W5100S reset, and retries DHCP
+  // without re-initing the chip — so the PHY stays powered and PoE (802.3af) stays up. NWSClient no
+  // longer touches the ethernet hardware; it just uses the shared global Ethernet for HTTPS.
+  bool begin() { return isReady(); }
 
   bool testGateway() {
     EthernetClient test;
@@ -258,36 +218,19 @@ public:
     }
   }
 
-  bool recover() {
-    _eth_ready = false;
-    Serial.println("[ETH] Hard resetting W5100S...");
-    pinMode(ETH_RST_PIN, OUTPUT);
-    digitalWrite(ETH_RST_PIN, LOW); delay(100);
-    digitalWrite(ETH_RST_PIN, HIGH); delay(500);
-
-    SPI1.begin();
-    Ethernet.init(SPI1, ETH_CS_PIN);
-
-    if (Ethernet.begin(_mac, 8000, 4000) == 0) {   // bounded DHCP (no linkStatus gate — see begin())
-      Serial.println("[ETH] Recovery DHCP failed.");
-      return false;
-    }
-    Serial.print("[ETH] Recovered. IP: "); Serial.println(Ethernet.localIP());
-    _eth_ready = true;
-    return true;
-  }
+  // Link/DHCP recovery is handled by the ethernet interface's loop() in main.cpp (it re-DHCPs when
+  // the link returns, without a chip reset). Nothing to do here beyond reporting current state.
+  bool recover() { return isReady(); }
 
   int pollAlerts() {
-    if (!_eth_ready) return 0;
+    if (!isReady()) return 0;
     _num_alerts = 0;
     String body = "";
 #ifdef NWS_DIRECT_HTTPS
     // Direct HTTPS to api.weather.gov via SSLClient/BearSSL over the W5100S — no proxy.
     // Heap-allocated (the object is ~20KB with the enlarged record buffer — too big for the
-    // stack). ISRG Root X1 anchors the chain; NWS requires a User-Agent.
-    // ESSENTIAL: the W5100S loses socket state after boot / between uses, which breaks BOTH TCP
-    // and DNS. Hard-reset it before every poll so connectivity + resolution work (proven fix).
-    recover();
+    // stack). Trust anchors from nws_trust_anchor.h; NWS requires a User-Agent. Ethernet link is
+    // kept alive by the RAK13800 interface in main.cpp, so no per-poll reset/recover is needed.
     SSLClient* ssl = new SSLClient(_client, TAs, TAs_NUM, A0, 1, SSLClient::SSL_NONE);
     if (!ssl) { Serial.println("[NWS] SSLClient alloc failed"); return -1; }
     // BearSSL validates the cert's notBefore/notAfter against a time. Feed it the node's RTC
@@ -434,9 +377,11 @@ public:
   }
   void markAlertSent(int idx) { if (idx >= 0 && idx < _num_alerts) markSent(_alerts[idx].id_hash); }
   void clearSentHistory() { _num_sent = 0; memset(_sent_hashes, 0, sizeof(_sent_hashes)); }
-  bool isReady() const { return _eth_ready; }
+  // Ethernet is up once the RAK13800 interface (main.cpp) has obtained a DHCP lease — i.e. the
+  // global Ethernet has a non-zero IP. NWSClient reads that shared state rather than tracking its own.
+  bool isReady() const { return Ethernet.localIP() != IPAddress(0, 0, 0, 0); }
   void setNow(uint32_t unix_time) { _now = unix_time; }   // for TLS cert-date validation
-  void maintain() { if (_eth_ready) Ethernet.maintain(); }
+  void maintain() { /* Ethernet.maintain() is driven by the interface loop() in main.cpp */ }
 
   // Compact header: "[Severe] Winter Storm Warning"
   int formatHeader(int idx, char* buf, int bufSize) const {

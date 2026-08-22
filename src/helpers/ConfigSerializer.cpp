@@ -165,7 +165,9 @@ void ConfigSerializer::def(const char* key, char* value, size_t max_len) {
     _context->file()->print(key);
     _context->file()->print(":\"");
     char c;
+    size_t guard = 0;
     while ((c = *value++) != 0) {  // TODO: handle UTF-8 encoding
+      if (++guard > max_len) break;  // hardening: never walk past the field buffer if unterminated
       if (c == '"') {
         _context->file()->print("\\\"");
       } else if (c == '\\') {
