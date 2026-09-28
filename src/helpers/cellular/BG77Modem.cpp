@@ -761,6 +761,33 @@ bool BG77Modem::otaDownload(const char* baseUrl) {
   return ok;
 }
 
+bool BG77Modem::uploadFromStream(const char* name, uint32_t size, Stream& src) {
+  if (!name || !name[0] || size == 0) return false;
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "AT+QFDEL=\"%s\"", name);
+  sendExpect(cmd, "OK", T_CFG);                        // ok if it didn't exist
+  snprintf(cmd, sizeof(cmd), "AT+QFUPL=\"%s\",%lu,120", name, (unsigned long)size);
+  flushInput();
+  sendAT(cmd);
+  if (!waitFor("CONNECT", T_CFG)) return false;
+
+  // Pump src -> modem. _ser.write() blocks on a full UART FIFO, pacing us to 115200; the
+  // USB CDC then NAKs the PC, so nothing overflows and RAM use is a single byte. Abort if
+  // the source stalls (PC gave up) so we can't hang the node forever.
+  uint32_t remaining = size;
+  unsigned long lastRx = millis();
+  while (remaining > 0) {
+    if (src.available()) {
+      _ser.write((uint8_t)src.read());
+      remaining--;
+      lastRx = millis();
+    } else if (millis() - lastRx > 20000) {
+      return false;                                    // stalled -> abort (QFUPL will error out)
+    }
+  }
+  return waitFor("+QFUPL:", 30000);                    // +QFUPL: <uploaded_len>,<checksum>
+}
+
 bool BG77Modem::pingHost(const char* host) {
   if (!host || !host[0]) return false;
   holdForGnss();

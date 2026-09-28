@@ -1767,6 +1767,25 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
   } else if (sender_timestamp == 0 && strcmp(command, "cell.resume") == 0) {
     if (bridge) { bridge->modem().resumeFromGnss(); strcpy(reply, "OK - modem resumed"); }
     else strcpy(reply, "Err - no modem");
+  } else if (sender_timestamp == 0 && memcmp(command, "cell.otaupload ", 15) == 0) {
+    // Bench: stream a UFS file from the PC over USB (no cell data needed). Args: "<name> <size>".
+    // After the command's '\r', the console loop leaves the raw <size> bytes in the Serial RX
+    // buffer; uploadFromStream() reads them straight through to the modem via QFUPL.
+    if (bridge) {
+      const char* args = &command[15];
+      const char* sp = strchr(args, ' ');
+      if (sp) {
+        char name[32];
+        size_t nlen = (size_t)(sp - args);
+        if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+        memcpy(name, args, nlen); name[nlen] = 0;
+        uint32_t size = (uint32_t)strtoul(sp + 1, NULL, 10);
+        bool ok = bridge->modem().uploadFromStream(name, size, Serial);
+        strcpy(reply, ok ? "OK - uploaded to UFS" : "Err - upload failed");
+      } else {
+        strcpy(reply, "Err - usage: cell.otaupload <name> <size>");
+      }
+    } else strcpy(reply, "Err - no modem");
   } else if (sender_timestamp == 0 && memcmp(command, "cell.ping ", 10) == 0) {
     // Bench diag: ping a host (name = DNS+data, dotted IP = raw data). Isolates DNS vs data.
     if (bridge) {

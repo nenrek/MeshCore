@@ -103,6 +103,13 @@ public:
    *  only). Returns true if any echo returned. Blocking; local console. */
   bool pingHost(const char* host);
 
+  /**
+   * Bench: stream `size` bytes from `src` straight into UFS file `name` via AT+QFUPL —
+   * lets a PC push the OTA image into UFS over the USB console when there's no cell data.
+   * Paced by the modem UART (natural USB back-pressure), so RAM stays flat. Blocking.
+   */
+  bool uploadFromStream(const char* name, uint32_t size, Stream& src);
+
   // ---- GNSS (BG77 integrated GPS/GLONASS/Galileo/BeiDou) ----
   /** Turn the standalone GNSS engine on (AT+QGPS=1). Idempotent. */
   bool gnssEnable();
