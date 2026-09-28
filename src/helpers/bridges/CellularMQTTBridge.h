@@ -72,6 +72,12 @@ public:
   void formatStatus(char* buf, size_t buf_size);
   // Command downlink: MyMesh registers itself so received commands run through the CLI.
   void setCommandSink(RemoteCommandSink* sink) { _cmd_sink = sink; }
+  // Publish an out-of-band ack (e.g. the result of a queued OTA job) on the node's ack topic.
+  void publishAck(const char* json) {
+    char topic[96];
+    if (buildTopic(MSG_ACK, topic, sizeof(topic))) enqueue(topic, json, strlen(json), 1, false);
+  }
+  bool queueEmpty() const { return _q_count == 0; }
 
 private:
   enum MsgType { MSG_STATUS, MSG_PACKETS, MSG_RAW, MSG_CMD, MSG_ACK };

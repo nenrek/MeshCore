@@ -99,6 +99,18 @@ public:
    */
   bool otaDownload(const char* baseUrl);
 
+  /**
+   * Verify the staged OTA image in UFS before handing it to the bootloader: otaapp.bin's
+   * size (QFLST) must be > 0 and its Nordic CRC16 must equal the CRC in otaapp.dat (last two
+   * bytes, LE) — the same check the bootloader's dfu_image_validate() does, but done BEFORE
+   * the bootloader erases the running app. Reads the files exactly as dfu_at_pull.c does
+   * (QFOPEN/QFREAD). Caller must hold the modem (holdForGnss). `why` gets a short result.
+   * BLOCKING (~40 s for a ~470 KB image at 115200).
+   */
+  bool verifyOtaImage(char* why, size_t why_size);
+  /** verifyOtaImage() wrapped in holdForGnss()/resumeFromGnss(). */
+  bool verifyOtaImageHeld(char* why, size_t why_size);
+
   /** Bench diagnostic: QPING `host` (hostname exercises DNS; a dotted IP tests raw data
    *  only). Returns true if any echo returned. Blocking; local console. */
   bool pingHost(const char* host);
@@ -154,6 +166,10 @@ private:
   bool   waitForPrompt(uint32_t timeout_ms);
   /** HTTP-GET `url` straight into UFS file `ufsName` via AT+QHTTPURL + QHTTPREADFILE. */
   bool   httpToUfs(const char* url, const char* ufsName);
+  long   ufsSize(const char* name);                          // QFLST size, -1 if absent
+  int    ufsOpen(const char* name);                          // QFOPEN handle, -1 on error
+  void   ufsClose(int handle);
+  int    ufsRead(int handle, uint8_t* buf, int want);        // bytes read, 0 = EOF, -1 = error
 
   // bring-up steps ----------------------------------------------------------
   void   powerPulse();

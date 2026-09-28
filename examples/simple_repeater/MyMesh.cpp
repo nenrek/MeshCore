@@ -535,8 +535,10 @@ void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 }
 
 void MyMesh::logRx(mesh::Packet *pkt, int len, float score) {
-#ifdef WITH_MQTT_BRIDGE
-  // MQTT bridge: always feed RX packets — bridge decides based on mqtt.rx setting
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
+  // MQTT/cellular bridge: always feed RX packets — the bridge decides (mqtt.rx / cell.rx).
+  // The cellular build has no bridge.source CLI and skips the tx->rx migration, so gating on
+  // bridge_pkt_src here silently dropped every packet on nodes whose prefs held 0 (APL_R02).
   if (bridge) bridge->onPacketReceived(pkt);
 #elif defined(WITH_BRIDGE)
   // Non-MQTT bridge (ESP-NOW): use bridge.source setting
@@ -578,8 +580,8 @@ void MyMesh::logTx(mesh::Packet *pkt, int len) {
   }
 #endif
 
-#ifdef WITH_MQTT_BRIDGE
-  // MQTT bridge: always feed TX packets — bridge decides based on mqtt.tx setting
+#if defined(WITH_MQTT_BRIDGE) || defined(WITH_CELLULAR_MQTT_BRIDGE)
+  // MQTT/cellular bridge: always feed TX packets — the bridge decides (mqtt.tx / cell.tx).
   if (bridge) bridge->sendPacket(pkt);
 #elif defined(WITH_BRIDGE)
   // Non-MQTT bridge (ESP-NOW): use bridge.source setting
@@ -1593,6 +1595,10 @@ static bool remoteCommandAllowed(const char* cmd) {
   while (*cmd == ' ') cmd++;
   if (strncmp(cmd, "get ", 4) == 0) return true;
   if (strcmp(cmd, "cell.status") == 0) return true;
+  // Cell OTA download: allowed ONLY from the fleet's own OTA host (the image is also CRC-
+  // verified before any flash). Checked before the denylist, which blocks every other "ota".
+  if (strncmp(cmd, "cell.otaget https://ota.meshwerks.org/", 38) == 0 && !strchr(cmd + 12, ' '))
+    return true;
   static const char* const denied[] = {
     "cell.pass", "password", "admin", "erase", "format",
     "ota", "firmware", "import", "export", "identity", "factory"
@@ -1601,6 +1607,45 @@ static bool remoteCommandAllowed(const char* cmd) {
     if (strstr(cmd, denied[i])) return false;
   return true;   // config sets, reboot, advert, gps, keepalive, interval, etc.
 }
+
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+// Runs a queued cell OTA job from loop(), only when no AT exchange is in flight (the blocking
+// modem takeover would otherwise clobber it — same rule as the GNSS path). Results go out as
+// {"id":"ota",...} on the ack topic (queued; delivered once MQTT reconnects after the job).
+void MyMesh::runOtaJob() {
+  char ack[160], why[48];
+  if (_ota_job == OTA_JOB_FLASH_WAIT) {
+    // Verified: give the "flashing" ack up to 90 s to leave (MQTT reconnects after the hold),
+    // then hand over to the bootloader. The image was verified; delivery of the ack is best-effort.
+    if (bridge->queueEmpty() || millisHasNowPassed(_ota_flash_at)) {
+      Serial.println("cell OTA: entering cell-DFU");
+      // Close the MQTT session first so the BG77 is quiet (no +QMTRECV/+QMTSTAT URCs) while
+      // the bootloader QFREADs the image — the same modem state the cell-DFU was validated in.
+      bridge->modem().holdForGnss();
+      delay(200);
+      board.enterCellDfu();   // doesn't return
+    }
+    return;
+  }
+  if (bridge->modem().isBusy()) return;
+
+  if (_ota_job == OTA_JOB_GET) {
+    bool ok = bridge->modem().otaDownload(_ota_url);
+    snprintf(ack, sizeof(ack), "{\"id\":\"ota\",\"result\":\"%s\"}",
+             ok ? "OK - image downloaded + CRC verified; send 'reboot celldfu' to flash"
+                : "Err - download or verify failed");
+    _ota_job = OTA_JOB_NONE;
+  } else {   // OTA_JOB_DFU
+    bool ok = bridge->modem().verifyOtaImageHeld(why, sizeof(why));
+    snprintf(ack, sizeof(ack), "{\"id\":\"ota\",\"result\":\"%s - %s\"}",
+             ok ? "OK - verified, flashing" : "Err - not flashing", why);
+    if (ok) { _ota_job = OTA_JOB_FLASH_WAIT; _ota_flash_at = futureMillis(90000); }
+    else    _ota_job = OTA_JOB_NONE;
+  }
+  Serial.println(ack);
+  bridge->publishAck(ack);
+}
+#endif
 
 bool MyMesh::runRemoteCommand(const char* envelope, char* ack, size_t ack_size) {
   StaticJsonDocument<256> in;
@@ -1793,13 +1838,28 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
       strcpy(reply, ok ? "OK - reply received" : "Err - no reply (DNS or data down)");
     } else strcpy(reply, "Err - no modem");
   } else if (sender_timestamp == 0 && memcmp(command, "cell.otaget ", 12) == 0) {
-    // Phase 7 (cell OTA): download <baseUrl>.bin/.dat into the BG77 UFS (otaapp.bin/.dat) so
-    // the bootloader's cell-DFU can flash them. Local console only; blocks for the download.
-    if (bridge) {
-      bool ok = bridge->modem().otaDownload(&command[12]);
-      strcpy(reply, ok ? "OK - image in UFS; 'reboot celldfu' to flash" : "Err - download failed");
-    } else {
-      strcpy(reply, "Err - no modem");
+    // Phase 7 (cell OTA): download <baseUrl>.bin/.dat into the BG77 UFS (otaapp.bin/.dat) and
+    // CRC-verify them, so the bootloader's cell-DFU can flash them. Queued, not run inline:
+    // this is reachable from the MQTT downlink (drainInbox, possibly mid-AT-exchange), so the
+    // blocking modem takeover runs from loop() once the modem is idle. Result -> ack id "ota".
+    if (!bridge) strcpy(reply, "Err - no modem");
+    else if (_ota_job) strcpy(reply, "Err - OTA job already queued");
+    else if (strncmp(&command[12], "https://", 8) != 0 || strlen(&command[12]) >= sizeof(_ota_url))
+      strcpy(reply, "Err - usage: cell.otaget https://<host>/<path-without-ext>");
+    else {
+      strcpy(_ota_url, &command[12]);
+      _ota_job = OTA_JOB_GET;
+      strcpy(reply, "OK - queued: download + verify (result follows as ack id=ota)");
+    }
+  } else if (memcmp(command, "reboot celldfu", 14) == 0) {
+    // Intercepts CommonCLI's immediate `reboot celldfu`: verify the staged UFS image first, so
+    // a missing/partial/stale image can never reach the bootloader (which only CRC-checks it
+    // after erasing the app). Queued like cell.otaget; ack id "ota" reports verify, then flashes.
+    if (!bridge) strcpy(reply, "Err - no modem");
+    else if (_ota_job) strcpy(reply, "Err - OTA job already queued");
+    else {
+      _ota_job = OTA_JOB_DFU;
+      strcpy(reply, "OK - queued: verify image, then flash (result follows as ack id=ota)");
     }
 #endif
   } else{
@@ -1819,6 +1879,7 @@ void MyMesh::loop() {
   // The cellular bridge runs on the nRF52 (no FreeRTOS task, unlike the ESP32 MQTTBridge),
   // so its modem/attach/publish state machine must be driven from the main loop.
   if (bridge) bridge->loop();
+  if (bridge && _ota_job) runOtaJob();
 #endif
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {

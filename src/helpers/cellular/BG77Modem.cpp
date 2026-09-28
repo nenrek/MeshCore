@@ -544,6 +544,15 @@ void BG77Modem::loop() {
           if (_dbg) _dbg->println("[BG77] escalate: AT+CFUN=1,1 modem reset");
           sendExpect("AT+CFUN=1,1", "OK", T_CFG);
           enterState(ST_POWERING);
+        } else if (!sendExpect("AT", "OK", 1000) && !sendExpect("AT", "OK", 1000)) {
+          // Modem completely silent — powered off (e.g. a brownout on a low battery); PWRKEY was
+          // only pulsed once, in begin(), so without this it stays dead until the node reboots.
+          // The CFUN escalation above can't help (it needs a registered, answering modem).
+          // PWRKEY toggles, so if the modem was on-but-mute this turns it off and the next
+          // silent cycle turns it back on — still converges. Only reached when AT gets nothing.
+          if (_dbg) _dbg->println("[BG77] modem silent: PWRKEY re-pulse");
+          powerPulse();
+          enterState(ST_POWERING);
         } else {
           enterState(ST_INIT);  // modem stays powered
         }
@@ -708,12 +717,125 @@ bool BG77Modem::httpToUfs(const char* url, const char* ufsName) {
   flushInput();
   sendAT("AT+QHTTPGET=80");
   if (!waitFor("+QHTTPGET: 0,200", 90000)) return false;
+  // +QHTTPGET: 0,200,<content_length> — keep the length to verify the saved file below.
+  const char* lp = strrchr(_line, ',');
+  long want = lp ? atol(lp + 1) : 0;
+  if (want <= 0) return false;                         // no Content-Length -> can't verify, refuse
 
   // Save the response body to UFS. +QHTTPREADFILE: 0 = success.
   snprintf(cmd, sizeof(cmd), "AT+QHTTPREADFILE=\"%s\",80", ufsName);
   flushInput();
   sendAT(cmd);
-  return waitFor("+QHTTPREADFILE: 0", 90000);
+  if (!waitFor("+QHTTPREADFILE: 0", 90000)) return false;
+
+  // The stored size must match Content-Length. A short file would otherwise only be caught by
+  // the bootloader's CRC — after it has started erasing the app.
+  return ufsSize(ufsName) == want;
+}
+
+// ---- UFS read helpers (mirror the bootloader's dfu_at_pull.c qf_size/qf_open/qf_read) ----
+
+long BG77Modem::ufsSize(const char* name) {
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "AT+QFLST=\"%s\"", name);   // +QFLST: "<name>",<size>
+  flushInput();
+  sendAT(cmd);
+  if (!waitFor("+QFLST:", T_CFG)) return -1;
+  const char* p = strrchr(_line, ',');
+  long size = p ? atol(p + 1) : -1;
+  waitFor("OK", T_CFG);
+  return size;
+}
+
+int BG77Modem::ufsOpen(const char* name) {
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "AT+QFOPEN=\"%s\",0", name);  // +QFOPEN: <handle>
+  flushInput();
+  sendAT(cmd);
+  if (!waitFor("+QFOPEN:", T_CFG)) return -1;
+  int h = atoi(strchr(_line, ':') + 1);
+  waitFor("OK", T_CFG);
+  return h;
+}
+
+void BG77Modem::ufsClose(int handle) {
+  char cmd[32];
+  snprintf(cmd, sizeof(cmd), "AT+QFCLOSE=%d", handle);
+  sendExpect(cmd, "OK", T_CFG);
+}
+
+// AT+QFREAD=<h>,<want> -> "CONNECT <len>" CRLF <len raw bytes> CRLF "OK".
+int BG77Modem::ufsRead(int handle, uint8_t* buf, int want) {
+  char cmd[40];
+  snprintf(cmd, sizeof(cmd), "AT+QFREAD=%d,%d", handle, want);
+  flushInput();
+  sendAT(cmd);
+  if (!waitFor("CONNECT", 5000)) return -1;
+  int len = atoi(strstr(_line, "CONNECT") + 7);
+  if (len <= 0) { waitFor("OK", 3000); return 0; }
+  int got = 0;
+  unsigned long last = millis();
+  while (got < len) {                                     // raw binary: may contain CR/LF
+    if (_ser.available()) {
+      int c = _ser.read();
+      if (got < want) buf[got] = (uint8_t)c;
+      got++;
+      last = millis();
+    } else if ((millis() - last) > 5000) {
+      return -1;
+    } else {
+      yield();
+    }
+  }
+  waitFor("OK", 3000);
+  return (got > want) ? want : got;
+}
+
+// Nordic SDK crc16_compute() (CRC-16/CCITT-FALSE), the CRC the legacy init packet carries.
+static uint16_t crc16_step(uint16_t crc, uint8_t b) {
+  crc = (uint16_t)((uint8_t)(crc >> 8) | (crc << 8));
+  crc ^= b;
+  crc ^= (uint8_t)(crc & 0xFF) >> 4;
+  crc ^= (uint16_t)((crc << 8) << 4);
+  crc ^= (uint16_t)(((crc & 0xFF) << 4) << 1);
+  return crc;
+}
+
+bool BG77Modem::verifyOtaImage(char* why, size_t why_size) {
+  long size = ufsSize("otaapp.bin");
+  if (size <= 0) { snprintf(why, why_size, "no otaapp.bin"); return false; }
+
+  uint8_t dat[32];
+  int dh = ufsOpen("otaapp.dat");
+  if (dh < 0) { snprintf(why, why_size, "no otaapp.dat"); return false; }
+  int dlen = ufsRead(dh, dat, sizeof(dat));
+  ufsClose(dh);
+  if (dlen < 2) { snprintf(why, why_size, "bad otaapp.dat (%d B)", dlen); return false; }
+  uint16_t want = (uint16_t)(dat[dlen - 2] | (dat[dlen - 1] << 8));
+
+  int bh = ufsOpen("otaapp.bin");
+  if (bh < 0) { snprintf(why, why_size, "open otaapp.bin failed"); return false; }
+  uint8_t chunk[512];
+  uint16_t crc = 0xFFFF;
+  long total = 0;
+  while (total < size) {
+    int n = ufsRead(bh, chunk, sizeof(chunk));
+    if (n <= 0) break;
+    for (int i = 0; i < n; i++) crc = crc16_step(crc, chunk[i]);
+    total += n;
+  }
+  ufsClose(bh);
+  if (total != size) { snprintf(why, why_size, "read %ld of %ld B", total, size); return false; }
+  if (crc != want) { snprintf(why, why_size, "crc %04X != dat %04X", crc, want); return false; }
+  snprintf(why, why_size, "%ld B crc %04X ok", size, crc);
+  return true;
+}
+
+bool BG77Modem::verifyOtaImageHeld(char* why, size_t why_size) {
+  holdForGnss();
+  bool ok = verifyOtaImage(why, why_size);
+  resumeFromGnss();
+  return ok;
 }
 
 bool BG77Modem::otaDownload(const char* baseUrl) {
@@ -754,6 +876,12 @@ bool BG77Modem::otaDownload(const char* baseUrl) {
     if (httpToUfs(url, "otaapp.dat")) {
       snprintf(url, sizeof(url), "%s.bin", baseUrl);
       ok = httpToUfs(url, "otaapp.bin");
+    }
+    // Only report success once the staged image passes the same CRC the bootloader checks.
+    if (ok) {
+      char why[48];
+      ok = verifyOtaImage(why, sizeof(why));
+      if (_dbg) { _dbg->print("[BG77] ota verify: "); _dbg->println(why); }
     }
   }
 

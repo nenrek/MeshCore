@@ -348,6 +348,14 @@ public:
   bool runRemoteCommand(const char* envelope, char* ack, size_t ack_size) override;
   uint32_t _cmd_last_seq = 0;   // replay guard; RAM-only (resets on reboot) until Phase 3 signing
 #endif
+#ifdef WITH_CELLULAR_MQTT_BRIDGE
+  // Queued cell OTA (cell.otaget / reboot celldfu) — run from loop() when the modem is idle.
+  enum { OTA_JOB_NONE = 0, OTA_JOB_GET, OTA_JOB_DFU, OTA_JOB_FLASH_WAIT };
+  uint8_t  _ota_job = OTA_JOB_NONE;
+  char     _ota_url[112] = "";
+  unsigned long _ota_flash_at = 0;
+  void runOtaJob();
+#endif
 
 #if defined(WITH_BRIDGE)
   void setBridgeState(bool enable) override {
