@@ -1577,6 +1577,10 @@ static bool remoteCommandAllowed(const char* cmd) {
   // gated by the downlink's fleet-user auth + replay guard, and the bootloader
   // CRC-validates the fetched image, so a bad/rogue URL can't flash a corrupt app.
   if (strncmp(cmd, "nrf ota ", 8) == 0) return true;
+  // ESP32 self-update from the fleet manifest: the source URL is compiled in
+  // (OTA_MANIFEST_BASE, not caller-supplied), the image is partition-signature checked
+  // and flashed to the inactive slot, so this can't be steered to a rogue image.
+  if (strcmp(cmd, "ota check") == 0 || strcmp(cmd, "ota update") == 0) return true;
   static const char* const denied[] = {
     "cell.pass", "password", "admin", "erase", "format",
     "ota", "firmware", "import", "export", "identity", "factory"
