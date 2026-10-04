@@ -118,6 +118,8 @@ class EspAtMqtt {
   const char* _node_name;
   float _freq, _bw; uint8_t _sf, _cr;   // radio params for /status
   uint16_t _batt_mv; int16_t _noise;    // observer telemetry (fed from main.cpp)
+  const double* _lat_src = nullptr;     // node position for MCLOC (NodePrefs, live)
+  const double* _lon_src = nullptr;
   uint32_t _tx_air, _rx_air, _recv_err;
   // Full radio/mesh stats snapshot (fed from main.cpp; pushed to ESP32 via MCSTA
   // so the observer's /status carries the REAL nRF52 stats, not the ESP32's blanks).
@@ -520,6 +522,9 @@ public:
   void setRadio(float freq, float bw, uint8_t sf, uint8_t cr) {
     _freq = freq; _bw = bw; _sf = sf; _cr = cr;
   }
+  // Live pointers to this node's configured position (NodePrefs node_lat/lon), pushed to
+  // the ESP32 as MCLOC so its adverts carry the real location (a `set lat` here follows).
+  void setLocationSource(const double* lat, const double* lon) { _lat_src = lat; _lon_src = lon; }
   // Observer telemetry snapshot for the /status "stats" block. Pushed from the
   // main loop (throttled) since the bridge can't reach board/mesh/radio directly.
   void setStats(uint16_t batt_mv, int16_t noise, uint32_t tx_air_s,
@@ -716,6 +721,11 @@ public:
                (double)_freq, (double)_bw, (unsigned)_sf, (unsigned)_cr); _at->print(ln); _at->print("\r\n");
       snprintf(ln, sizeof(ln), "MCBATT %u", (unsigned)_batt_mv);  // battery mV
       _at->print(ln); _at->print("\r\n");
+      // Location (skipped while unset at 0,0 so it never blanks a position set on the ESP32).
+      if (_lat_src && _lon_src && (*_lat_src != 0 || *_lon_src != 0)) {
+        snprintf(ln, sizeof(ln), "MCLOC %.6f %.6f", *_lat_src, *_lon_src);
+        _at->print(ln); _at->print("\r\n");
+      }
       // Full stats snapshot so the ESP32 /status reports the REAL radio/mesh stats
       // (it has no radio of its own). Order: noise tx_air rx_air recv_err queue
       // uptime errflags pkts_sent pkts_recv. Battery goes via MCBATT (above).

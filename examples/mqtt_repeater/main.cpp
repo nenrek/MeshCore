@@ -133,7 +133,10 @@ void setup() {
     mqtt.setPrivKey(prv, n); }
   // Snapshot the configured LoRa params for the /status "radio" field.
   { NodePrefs* pr = the_mesh.getNodePrefs();
-    if (pr) mqtt.setRadio(pr->freq, pr->bw, pr->sf, pr->cr); }
+    if (pr) {
+      mqtt.setRadio(pr->freq, pr->bw, pr->sf, pr->cr);
+      mqtt.setLocationSource(&pr->node_lat, &pr->node_lon);   // -> MCLOC to the ESP32
+    } }
   mqtt.load(fs);
 
   tables.setBridge(&mqtt);
