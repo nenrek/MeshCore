@@ -49,6 +49,8 @@ class UartRadio : public mesh::Radio {
   bool     _have_name = false;
   uint16_t _r_batt = 0;              // battery mV (MCBATT)
   bool     _have_batt = false;
+  double   _r_lat = 0, _r_lon = 0;   // node location (MCLOC) -> advert position on the maps
+  bool     _have_loc = false;
   // Full radio/mesh stats pushed by the nRF52 (MCSTA) — the REAL stats for the
   // observer's /status (this ESP32 has no radio, so its own stats are all blank).
   int16_t  _s_noise = 0;
@@ -87,6 +89,18 @@ class UartRadio : public mesh::Radio {
     }
     if (strncmp(_line, "MCBATT ", 7) == 0) {        // battery mV
       _r_batt = (uint16_t)atoi(_line + 7); _have_batt = true; return;
+    }
+    // Location: "MCLOC <lat> <lon>". Ignored if out of range or 0,0 (unset), so a
+    // node without a configured position can't blank one set on the ESP32.
+    if (strncmp(_line, "MCLOC ", 6) == 0) {
+      char* p = _line + 6;
+      double la = atof(p);
+      char* p2 = strchr(p, ' '); if (!p2) return;
+      double lo = atof(p2 + 1);
+      if (la >= -90 && la <= 90 && lo >= -180 && lo <= 180 && (la != 0 || lo != 0)) {
+        _r_lat = la; _r_lon = lo; _have_loc = true;
+      }
+      return;
     }
     // Full stats snapshot: "MCSTA <noise> <tx_air> <rx_air> <recv_err> <queue>
     // <uptime> <errflags> <pkts_sent> <pkts_recv>". Stored + surfaced in /status.
@@ -253,6 +267,8 @@ public:
   void takeName(char* dst, int n) { strncpy(dst, _r_name, n - 1); dst[n - 1] = 0; _have_name = false; }
   bool hasBatt() const { return _have_batt; }
   uint16_t takeBatt() { _have_batt = false; return _r_batt; }
+  bool hasLocation() const { return _have_loc; }
+  void takeLocation(double& lat, double& lon) { lat = _r_lat; lon = _r_lon; _have_loc = false; }
 
   // Dispatcher-sourced stats (airtime/queue/uptime/errflags/packets) that the
   // bridge can't get from a real radio here — main.cpp pushes these into the

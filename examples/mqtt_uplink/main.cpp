@@ -210,6 +210,19 @@ void loop() {
     }
   }
 
+  // Location from the nRF52 -> node_lat/lon (the position in the ADVERT the maps plot).
+  // The push repeats every 15 s, so persist only on an actual change: an ESP32 reboot
+  // or swap then keeps the node's position instead of falling back to 0,0.
+  if (radio_driver.hasLocation()) {
+    double la, lo;
+    radio_driver.takeLocation(la, lo);
+    NodePrefs* pr = the_mesh.getNodePrefs();
+    if (pr && (fabs(pr->node_lat - la) > 1e-6 || fabs(pr->node_lon - lo) > 1e-6)) {
+      pr->node_lat = la; pr->node_lon = lo;
+      the_mesh.savePrefs();
+    }
+  }
+
   // Battery (mV) from the node -> reported in /status.
   if (radio_driver.hasBatt()) {
     board.setBattMilliVolts(radio_driver.takeBatt());
