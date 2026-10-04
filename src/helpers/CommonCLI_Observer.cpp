@@ -1058,7 +1058,8 @@ bool CommonCLI::handleObserverCommand(uint32_t sender_timestamp, char* command, 
 #else
           client.setCACertBundle(rootca_crt_bundle_start);
 #endif
-          client.setTimeout(8000);
+          client.setTimeout(8);   // SECONDS on Arduino-ESP32 2.x (8000 was ~2.2 h)
+          client.setHandshakeTimeout(8);
           bool ok = client.connect(host, port);
           if (ok) {
             client.stop();

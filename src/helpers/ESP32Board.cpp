@@ -189,7 +189,18 @@ bool ESP32Board::otaFromManifest(const char* current_ver, bool dry_run, char rep
     strcpy(reply, "ERR: OTA task spawn failed");
     return false;
   }
+  // Bounded wait: the worker's own network timeouts should always fire first, but an
+  // unbounded wait here once wedged the whole CLI for >12 min (APL_R01, 2026-10-04).
+  // On expiry the worker may still own TLS/heap state, so restart rather than continue:
+  // safe even mid-update, as the inactive partition is only activated after a full write.
+  const unsigned long limit_ms = dry_run ? 120000UL : 600000UL;
+  unsigned long t0 = millis();
   while (!args.done) {
+    if (millis() - t0 > limit_ms) {
+      Serial.println("OTA: worker timed out - restarting");
+      delay(100);
+      ESP.restart();
+    }
     delay(50);  // Arduino delay() yields to other tasks
   }
   return args.result;
@@ -233,7 +244,10 @@ bool ESP32Board::otaFromManifestImpl(const char* current_ver, bool dry_run, char
 #else
   mclient.setCACertBundle(rootca_crt_bundle_start);
 #endif
-  mclient.setTimeout(15000);
+  // Arduino-ESP32 2.x: WiFiClient(Secure)::setTimeout() takes SECONDS (15000 was ~4 h, so a
+  // stalled TLS link hung the CLI for hours). Bound the handshake separately as well.
+  mclient.setTimeout(15);
+  mclient.setHandshakeTimeout(20);
   snprintf(murl, sizeof(murl), "%s/%s.json", OTA_MANIFEST_BASE, OTA_VARIANT);
   if (!http.begin(mclient, murl)) {
     strcpy(reply, "ERR: manifest connect failed");
@@ -255,7 +269,7 @@ bool ESP32Board::otaFromManifestImpl(const char* current_ver, bool dry_run, char
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  stream->setTimeout(20000);  // readBytes honours this, so a slow TLS link != EOF
+  stream->setTimeout(20);  // SECONDS on a WiFiClient (2.x); readBytes honours it
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, *stream);
@@ -377,7 +391,8 @@ bool ESP32Board::otaFromManifestImpl(const char* current_ver, bool dry_run, char
 #else
   uclient.setCACertBundle(rootca_crt_bundle_start);
 #endif
-  uclient.setTimeout(20000);
+  uclient.setTimeout(20);           // SECONDS (2.x) — was 20000 (~5.5 h)
+  uclient.setHandshakeTimeout(20);
 
   // Console progress to the USB serial (always on; MESH_DEBUG is off on the default
   // observer profile). Non-capturing lambdas + a file-static decile, so the global
