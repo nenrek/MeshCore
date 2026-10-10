@@ -1593,6 +1593,27 @@ void MyMesh::buildStatsJson(char* buf, size_t buf_size) {
 // so they can't clip a safe command — e.g. "keepalive" contains none of them.
 static bool remoteCommandAllowed(const char* cmd) {
   while (*cmd == ' ') cmd++;
+  // Downlink commands run with console trust (handleCommand(0, ...)), and CommonCLI only
+  // withholds secrets from callers with a non-zero sender_timestamp — so this filter is the
+  // only thing between an MQTT publish and the node's secrets. Checked FIRST, before any
+  // allowance (a bare `get ` used to short-circuit it: `get prv.key` returned the identity
+  // key — confirmed on hardware 2026-10-10). Substring, not exact-key, matching on purpose:
+  // CommonCLI matches keys by prefix (memcmp), so `get prv.keyX` / `get prv.key ` reach the
+  // same getter and would slip past an exact list.
+  static const char* const secret[] = {
+    "prv", "pass", "pwd", "psk", "secret", "token", "identity"
+  };
+  for (unsigned i = 0; i < sizeof(secret) / sizeof(secret[0]); i++)
+    if (strstr(cmd, secret[i])) return false;
+  // Connection redirects: pointing the node at another broker/user, or weakening its TLS,
+  // would hand the node (and its broker credentials) to whoever sent the command. Local
+  // (USB) only until downlink commands are signed. cell.apn stays remote: a bad APN only
+  // takes the node offline, and a SIM swap may need it.
+  static const char* const redirect[] = {
+    "cell.server", "cell.port", "cell.user", "cell.tls"
+  };
+  for (unsigned i = 0; i < sizeof(redirect) / sizeof(redirect[0]); i++)
+    if (strstr(cmd, redirect[i])) return false;
   if (strncmp(cmd, "get ", 4) == 0) return true;
   if (strcmp(cmd, "cell.status") == 0) return true;
   // Cell OTA download: allowed ONLY from the fleet's own OTA host (the image is also CRC-
