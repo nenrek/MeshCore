@@ -1570,13 +1570,34 @@ void MyMesh::buildStatsJson(char* buf, size_t buf_size) {
 // with the cellular branch (cell.status is a harmless no-op on WiFi).
 static bool remoteCommandAllowed(const char* cmd) {
   while (*cmd == ' ') cmd++;
+  // Downlink commands run with console trust (handleCommand(0, ...)), and CommonCLI only
+  // withholds secrets from callers with a non-zero sender_timestamp — so this filter is the
+  // only thing between an MQTT publish and the node's secrets. Checked FIRST, before any
+  // allowance (a bare `get ` used to short-circuit it: `get prv.key` returned the identity
+  // key — confirmed on a cell node 2026-10-10; same code here). Substring, not exact-key,
+  // matching on purpose: CommonCLI matches keys by prefix (memcmp), so `get prv.keyX` /
+  // `get prv.key ` reach the same getter and would slip past an exact list such as
+  // wcIsSecretReadCommand. Covers wifi.pwd, mqttN.password/token, alert.psk, bridge.secret.
+  static const char* const secret[] = {
+    "prv", "pass", "pwd", "psk", "secret", "token", "identity"
+  };
+  for (unsigned i = 0; i < sizeof(secret) / sizeof(secret[0]); i++)
+    if (strstr(cmd, secret[i])) return false;
+  // Connection redirects: joining another AP or pointing an MQTT slot (server, port, user,
+  // preset, topic, audience...) somewhere else would hand the node to whoever sent the
+  // command. Local (USB / web portal) only until downlink commands are signed.
+  if (strstr(cmd, "wifi.ssid")) return false;
+  for (const char* p = strstr(cmd, "mqtt"); p; p = strstr(p + 4, "mqtt"))
+    if (p[4] >= '1' && p[4] <= '9' && p[5] == '.') return false;   // mqttN.<field>
   if (strncmp(cmd, "get ", 4) == 0) return true;
   if (strcmp(cmd, "cell.status") == 0) return true;
   // Phase 7: remote nRF52 app-OTA is the intended deploy path — explicitly allowed
-  // ahead of the "ota"/"firmware" denylist below (which otherwise blocks it). Still
-  // gated by the downlink's fleet-user auth + replay guard, and the bootloader
-  // CRC-validates the fetched image, so a bad/rogue URL can't flash a corrupt app.
-  if (strncmp(cmd, "nrf ota ", 8) == 0) return true;
+  // ahead of the "ota"/"firmware" denylist below (which otherwise blocks it), but ONLY
+  // from the fleet's own OTA host. The bootloader's CRC catches corruption, not
+  // tampering: any well-formed image passes it, so a caller-supplied URL was a
+  // remote-firmware-install primitive.
+  if (strncmp(cmd, "nrf ota https://ota.meshwerks.org/", 34) == 0 && !strchr(cmd + 8, ' '))
+    return true;
   // ESP32 self-update from the fleet manifest: the source URL is compiled in
   // (OTA_MANIFEST_BASE, not caller-supplied), the image is partition-signature checked
   // and flashed to the inactive slot, so this can't be steered to a rogue image.
