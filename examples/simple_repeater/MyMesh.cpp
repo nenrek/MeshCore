@@ -1614,6 +1614,10 @@ static bool remoteCommandAllowed(const char* cmd) {
   };
   for (unsigned i = 0; i < sizeof(redirect) / sizeof(redirect[0]); i++)
     if (strstr(cmd, redirect[i])) return false;
+  // Raw modem AT passthrough: AT+QFUPL can write otaapp.bin/.dat straight into UFS and a
+  // following `reboot celldfu` flashes it — bypassing the cell.otaget host lock — and other AT
+  // commands can rewrite APN/SSL/MQTT modem config. USB console only.
+  if (strncmp(cmd, "at ", 3) == 0 || strcmp(cmd, "at") == 0) return false;
   if (strncmp(cmd, "get ", 4) == 0) return true;
   if (strcmp(cmd, "cell.status") == 0) return true;
   // Cell OTA download: allowed ONLY from the fleet's own OTA host (the image is also CRC-

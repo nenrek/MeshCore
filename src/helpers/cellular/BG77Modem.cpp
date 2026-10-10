@@ -517,7 +517,7 @@ void BG77Modem::loop() {
         else if (r == AT_FAIL) enterBackoff("tls setup failed");
       } else {                           // socket open + MQTT connect
         AtRes r = openConnectTick();
-        if (r == AT_OK) { _backoff_step = 0; _fail_cycles = 0; enterState(ST_READY); _last_poll = millis(); }
+        if (r == AT_OK) { _backoff_step = 0; _fail_cycles = 0; _escalations = 0; enterState(ST_READY); _last_poll = millis(); }
         else if (r == AT_FAIL) enterBackoff("mqtt connect failed");
       }
       break;
@@ -541,8 +541,21 @@ void BG77Modem::loop() {
         // from ST_POWERING. Best-effort, one-off per escalation. Normal operation never hits this.
         if (_fail_cycles >= 6) {
           _fail_cycles = 0;
-          if (_dbg) _dbg->println("[BG77] escalate: AT+CFUN=1,1 modem reset");
-          sendExpect("AT+CFUN=1,1", "OK", T_CFG);
+          _escalations++;
+          if (_escalations & 1) {
+            if (_dbg) _dbg->println("[BG77] escalate: AT+CFUN=1,1 modem reset");
+            sendExpect("AT+CFUN=1,1", "OK", T_CFG);
+          } else {
+            // CFUN restarts the radio stack only. APL_R02 after its first cell-DFU sat
+            // registered (reg 5, csq -51) with every QMTOPEN failing (-1) for 20+ min, through
+            // the CFUN escalation; a node reboot — whose PWRKEY pulse power-cycles the modem —
+            // fixed it at once. So the next escalation does that: graceful power-down, then
+            // PWRKEY back on.
+            if (_dbg) _dbg->println("[BG77] escalate: modem power cycle (QPOWD + PWRKEY)");
+            sendExpect("AT+QPOWD=1", "POWERED DOWN", 8000);
+            delay(2000);
+            powerPulse();
+          }
           enterState(ST_POWERING);
         } else if (!sendExpect("AT", "OK", 1000) && !sendExpect("AT", "OK", 1000)) {
           // Modem completely silent — powered off (e.g. a brownout on a low battery); PWRKEY was
@@ -722,11 +735,14 @@ bool BG77Modem::httpToUfs(const char* url, const char* ufsName) {
   long want = lp ? atol(lp + 1) : 0;
   if (want <= 0) return false;                         // no Content-Length -> can't verify, refuse
 
-  // Save the response body to UFS. +QHTTPREADFILE: 0 = success.
-  snprintf(cmd, sizeof(cmd), "AT+QHTTPREADFILE=\"%s\",80", ufsName);
+  // Save the response body to UFS. +QHTTPREADFILE: 0 = success. <wait_time> bounds the whole
+  // body transfer, not inactivity: 474 KB over APL_R02's LTE-M took >90 s (2026-10-10), so the
+  // old 80 s modem / 90 s app limits reported failure while the modem went on to finish the
+  // file. Our wait must outlast the modem's so we read its real verdict.
+  snprintf(cmd, sizeof(cmd), "AT+QHTTPREADFILE=\"%s\",%u", ufsName, (unsigned)OTA_READFILE_S);
   flushInput();
   sendAT(cmd);
-  if (!waitFor("+QHTTPREADFILE: 0", 90000)) return false;
+  if (!waitFor("+QHTTPREADFILE: 0", (OTA_READFILE_S + 20) * 1000UL)) return false;
 
   // The stored size must match Content-Length. A short file would otherwise only be caught by
   // the bootloader's CRC — after it has started erasing the app.
@@ -885,6 +901,9 @@ bool BG77Modem::otaDownload(const char* baseUrl) {
     }
   }
 
+  // Release the HTTP(S) session either way so nothing from the download lingers into the
+  // MQTT bring-up or across the cell-DFU reset ("ERROR" when none is open is fine).
+  sendExpect("AT+QHTTPSTOP", "OK", T_CFG);
   resumeFromGnss();   // hand the modem back to the MQTT bring-up
   return ok;
 }

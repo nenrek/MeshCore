@@ -218,6 +218,7 @@ private:
 
   static const uint8_t MQTT_CLIENT_IDX = 0;   // AT+QMTCFG client index (0..5)
   static const uint8_t SSL_CTX_IDX     = 2;   // AT+QSSLCFG context index (0..5)
+  static const uint16_t OTA_READFILE_S = 300; // QHTTPREADFILE budget for a whole app image
   static const char*   CA_FILE_NAME;          // "cacert.pem"
 
   State    _state        = ST_OFF;
@@ -237,6 +238,7 @@ private:
   unsigned long _backoff_until = 0;
   uint8_t  _backoff_step = 0;
   uint16_t _fail_cycles = 0;   // consecutive failed bring-ups; escalates to a modem soft-reset
+  uint8_t  _escalations = 0;   // resets since the last good connect: odd -> CFUN, even -> power cycle
 
   // non-blocking tick engine state
   bool     _at_active    = false;   // an AT command is in flight (sent, awaiting expect)
