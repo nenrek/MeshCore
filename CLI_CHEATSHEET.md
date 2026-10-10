@@ -78,7 +78,13 @@ More advanced radio/routing keys exist (`flood.max`, `agc.reset.interval`, `radi
 | `set cell.interval <min>` | Status publish interval |
 | `set cell.gps <on\|off>` | GNSS self-location — acquires with a one-shot MQTT pause (won't drop the uplink) |
 | `set cell.packets <on\|off>` | Publish heard packets; `cell.rx` / `cell.status` / `cell.tx` gate the others |
-| `at <AT command>` | Raw BG77 modem passthrough, e.g. `at AT+CSQ` (debug builds only) |
+| `cell.ping <host>` / `cell.ping` | *(cell.13+)* Queue a data-path ping (IP = data only, name = DNS + data; ≤90 s, re-opens the data link) / show the last result + age. Works over **mesh admin** — the way in when a node is registered but its data/MQTT is down. Use `8.8.8.8`; the broker IP doesn't answer pings |
+| `cell.ufs` | *(cell.13+)* Modem file storage: free space + files (e.g. a staged `otaapp.bin`). First run queues, run again to read. Read-only; works over mesh admin |
+| `cell.otaget https://ota.meshwerks.org/<path>` | Download `<path>.bin/.dat` into the modem + CRC-verify (ack `id=ota`). Host-locked. *(cell.12+: 300 s download budget)* |
+| `reboot celldfu` | Re-verify the staged image, then flash it from the modem (ack `id=ota`, ~90 s hold + ~40 s flash) |
+| `at <AT command>` | Raw BG77 modem passthrough, e.g. `at AT+CSQ` — **USB console only** (refused over MQTT since cell.12; not available over mesh) |
+
+**Over the MQTT downlink** (cell.11+ / wifiobs.16+), commands touching secrets (`prv`, `pass`, `pwd`, `psk`, `secret`, `token`, `identity`) or connection redirects (`cell.server/port/user/tls*`; WiFi: `wifi.ssid`, `mqttN.*`) are refused — do those over USB. Only the `fleet` broker user can send commands.
 
 ## WiFi observer (`uart` nRF52 + `wifiobs` ESP32)
 
@@ -141,7 +147,7 @@ The asset beacon is a companion-app build, so it also takes the full **Common** 
 
 ## Reading a version
 
-`ver` → `v1.16.0-mw.cell.1+g744b985`
+`ver` → `v1.17.1-mw.cell.13+g3da72c2`
 
 | Part | Meaning |
 |---|---|
