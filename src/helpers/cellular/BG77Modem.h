@@ -114,6 +114,9 @@ public:
   /** Bench diagnostic: QPING `host` (hostname exercises DNS; a dotted IP tests raw data
    *  only). Returns true if any echo returned. Blocking; local console. */
   bool pingHost(const char* host);
+  // Read-only UFS summary (QFLDS free/total + QFLST files) into `out`. File-system AT only:
+  // touches neither the data bearer nor the MQTT session.
+  bool ufsInfo(char* out, size_t out_size);
 
   /**
    * Bench: stream `size` bytes from `src` straight into UFS file `name` via AT+QFUPL —

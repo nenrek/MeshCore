@@ -1634,6 +1634,28 @@ static bool remoteCommandAllowed(const char* cmd) {
 }
 
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
+// Runs a queued cell.ping / cell.ufs from loop() when no AT exchange is in flight. The result
+// is kept for the next query (mesh admins have no async channel) and also published as an
+// ack {"id":"diag"} for MQTT callers.
+void MyMesh::runDiagJob() {
+  if (bridge->modem().isBusy()) return;
+  char ack[200];
+  if (_diag_job == DIAG_PING) {
+    bool ok = bridge->modem().pingHost(_diag_host);
+    snprintf(_diag_ping, sizeof(_diag_ping), "%s %s", _diag_host,
+             ok ? "OK - reply received" : "FAIL - no reply (DNS or data down)");
+    _diag_ping_at = millis();
+    snprintf(ack, sizeof(ack), "{\"id\":\"diag\",\"result\":\"ping %s\"}", _diag_ping);
+  } else {
+    if (!bridge->modem().ufsInfo(_diag_ufs, sizeof(_diag_ufs))) strcpy(_diag_ufs, "Err - no UFS reply");
+    _diag_ufs_at = millis();
+    snprintf(ack, sizeof(ack), "{\"id\":\"diag\",\"result\":\"ufs %s\"}", _diag_ufs);
+  }
+  _diag_job = DIAG_NONE;
+  Serial.println(ack);
+  bridge->publishAck(ack);
+}
+
 // Runs a queued cell OTA job from loop(), only when no AT exchange is in flight (the blocking
 // modem takeover would otherwise clobber it — same rule as the GNSS path). Results go out as
 // {"id":"ota",...} on the ack topic (queued; delivered once MQTT reconnects after the job).
@@ -1856,12 +1878,37 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
         strcpy(reply, "Err - usage: cell.otaupload <name> <size>");
       }
     } else strcpy(reply, "Err - no modem");
-  } else if (sender_timestamp == 0 && memcmp(command, "cell.ping ", 10) == 0) {
-    // Bench diag: ping a host (name = DNS+data, dotted IP = raw data). Isolates DNS vs data.
-    if (bridge) {
-      bool ok = bridge->modem().pingHost(&command[10]);
-      strcpy(reply, ok ? "OK - reply received" : "Err - no reply (DNS or data down)");
-    } else strcpy(reply, "Err - no modem");
+  } else if (memcmp(command, "cell.ping", 9) == 0 && (command[9] == 0 || command[9] == ' ')) {
+    // Data-plane probe (name = DNS+data, dotted IP = raw data): `cell.ping <host>` queues it,
+    // bare `cell.ping` shows the last result. Open to mesh admins (not just USB) because the
+    // mesh is the only way in when a node is registered but its data/MQTT is down (APL_R02,
+    // 2026-10-10). It re-activates the PDP context, so an up MQTT session reconnects after.
+    const char* host = &command[9];
+    while (*host == ' ') host++;
+    bool valid = *host && strlen(host) < sizeof(_diag_host);
+    for (const char* c = host; valid && *c; c++)
+      valid = isalnum((unsigned char)*c) || *c == '.' || *c == '-';
+    if (!bridge) strcpy(reply, "Err - no modem");
+    else if (!*host) {
+      if (_diag_job == DIAG_PING) sprintf(reply, "running: ping %s", _diag_host);
+      else if (!_diag_ping[0]) strcpy(reply, "no ping run yet - cell.ping <host>");
+      else sprintf(reply, "%s (%lus ago)", _diag_ping, (millis() - _diag_ping_at) / 1000);
+    } else if (!valid) strcpy(reply, "Err - usage: cell.ping <hostname-or-ip>");
+    else if (_diag_job || _ota_job) strcpy(reply, "Err - busy, try again shortly");
+    else {
+      strcpy(_diag_host, host);
+      _diag_job = DIAG_PING;
+      sprintf(reply, "OK - queued ping %s (<=90s); bare cell.ping shows result", _diag_host);
+    }
+  } else if (strcmp(command, "cell.ufs") == 0) {
+    // Read-only modem file-system summary (free space + files, e.g. a staged otaapp image).
+    // Shows a result under 60 s old, otherwise queues a refresh — run it again to read it.
+    if (!bridge) strcpy(reply, "Err - no modem");
+    else if (_diag_job == DIAG_UFS) strcpy(reply, "running - try cell.ufs again in a few s");
+    else if (_diag_ufs[0] && (millis() - _diag_ufs_at) < 60000)
+      snprintf(reply, 160, "%s", _diag_ufs);
+    else if (_diag_job || _ota_job) strcpy(reply, "Err - busy, try again shortly");
+    else { _diag_job = DIAG_UFS; strcpy(reply, "OK - queued; run cell.ufs again in a few s"); }
   } else if (sender_timestamp == 0 && memcmp(command, "cell.otaget ", 12) == 0) {
     // Phase 7 (cell OTA): download <baseUrl>.bin/.dat into the BG77 UFS (otaapp.bin/.dat) and
     // CRC-verify them, so the bootloader's cell-DFU can flash them. Queued, not run inline:
@@ -1905,6 +1952,7 @@ void MyMesh::loop() {
   // so its modem/attach/publish state machine must be driven from the main loop.
   if (bridge) bridge->loop();
   if (bridge && _ota_job) runOtaJob();
+  else if (bridge && _diag_job) runDiagJob();
 #endif
 
   if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {

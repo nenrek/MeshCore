@@ -355,6 +355,18 @@ public:
   char     _ota_url[112] = "";
   unsigned long _ota_flash_at = 0;
   void runOtaJob();
+  // Queued diagnostics (cell.ping <host> / cell.ufs) — same run-when-idle rule as OTA, so
+  // they're safe from the MQTT downlink and the mesh CLI (both may land mid-AT-exchange).
+  // Results are kept for the next `cell.ping` / `cell.ufs`, since a mesh admin can't get an
+  // async ack — and that's the path left when a node's data plane is down.
+  enum { DIAG_NONE = 0, DIAG_PING, DIAG_UFS };
+  uint8_t  _diag_job = DIAG_NONE;
+  char     _diag_host[48] = "";
+  char     _diag_ping[72] = "";
+  unsigned long _diag_ping_at = 0;
+  char     _diag_ufs[150] = "";
+  unsigned long _diag_ufs_at = 0;
+  void runDiagJob();
 #endif
 
 #if defined(WITH_BRIDGE)

@@ -935,6 +935,38 @@ bool BG77Modem::uploadFromStream(const char* name, uint32_t size, Stream& src) {
   return waitFor("+QFUPL:", 30000);                    // +QFUPL: <uploaded_len>,<checksum>
 }
 
+bool BG77Modem::ufsInfo(char* out, size_t out_size) {
+  if (!out || out_size < 16) return false;
+  out[0] = 0;
+  size_t n = 0;
+  flushInput();
+  sendAT("AT+QFLDS=\"UFS\"");                         // +QFLDS: <free>,<total>
+  if (waitFor("+QFLDS:", T_CFG)) {
+    const char* p = strchr(_line, ':');
+    long fr = p ? atol(p + 1) : 0;
+    const char* q = p ? strchr(p, ',') : NULL;
+    long tot = q ? atol(q + 1) : 0;
+    n += snprintf(out + n, out_size - n, "free %ldK/%ldK", fr / 1024, tot / 1024);
+    waitFor("OK", T_CFG);
+  }
+  flushInput();
+  sendAT("AT+QFLST=\"*\"");                            // +QFLST: "<name>",<size> ... OK
+  unsigned long start = millis();
+  while ((millis() - start) < T_CFG) {
+    if (readLine(T_CFG - (millis() - start)) < 0) break;
+    if (strstr(_line, "+QFLST:")) {
+      const char* a = strchr(_line, '"');
+      const char* b = a ? strchr(a + 1, '"') : NULL;
+      const char* c = b ? strchr(b, ',') : NULL;
+      if (a && b && n + 4 < out_size)
+        n += snprintf(out + n, out_size - n, "; %.*s %ld", (int)(b - a - 1), a + 1,
+                      c ? atol(c + 1) : -1L);
+    } else if (strstr(_line, "OK") || strstr(_line, "ERROR")) break;
+  }
+  if (n >= out_size) n = out_size - 1;
+  return n > 0;
+}
+
 bool BG77Modem::pingHost(const char* host) {
   if (!host || !host[0]) return false;
   holdForGnss();
