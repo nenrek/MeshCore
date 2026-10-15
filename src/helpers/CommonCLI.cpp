@@ -1493,6 +1493,24 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "cell.band ", 10) == 0) {
     StrHelper::strncpy(_prefs->cellular_band, &config[10], sizeof(_prefs->cellular_band));
     savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
+  } else if (memcmp(config, "cell.plmn ", 10) == 0) {
+    // Preferred operator: 5-6 digit numeric PLMN (e.g. 310260 = T-Mobile US), or auto/off.
+    // Applied as AT+COPS=4 (manual with automatic fallback), so a wrong or absent network
+    // degrades to normal selection rather than taking the node offline.
+    const char* v = &config[10];
+    while (*v == ' ') v++;
+    size_t n = strlen(v);
+    bool digits = (n == 5 || n == 6);
+    for (size_t i = 0; digits && i < n; i++) digits = (v[i] >= '0' && v[i] <= '9');
+    if (strcmp(v, "auto") == 0 || strcmp(v, "off") == 0) {
+      _prefs->cellular_plmn[0] = 0;
+      savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK - automatic operator selection");
+    } else if (digits) {
+      StrHelper::strncpy(_prefs->cellular_plmn, v, sizeof(_prefs->cellular_plmn));
+      savePrefs(); _callbacks->restartBridge(); sprintf(reply, "OK - prefer %s (auto fallback)", _prefs->cellular_plmn);
+    } else {
+      strcpy(reply, "Err - usage: set cell.plmn <5-6 digit PLMN, e.g. 310260> | auto");
+    }
   } else if (memcmp(config, "cell.tls.verify ", 16) == 0) {
     _prefs->cellular_tls_verify = memcmp(&config[16], "on", 2) == 0 ? 1 : 0;
     savePrefs(); _callbacks->restartBridge(); strcpy(reply, "OK");
@@ -1586,6 +1604,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, char* command, char* rep
   } else if (memcmp(config, "af", 2) == 0) {
     sprintf(reply, "> %s", StrHelper::ftoa(_prefs->airtime_factor));
 #ifdef WITH_CELLULAR_MQTT_BRIDGE
+  } else if (strcmp(config, "cell.plmn") == 0) {
+    sprintf(reply, "> %s", _prefs->cellular_plmn[0] ? _prefs->cellular_plmn : "auto");
   } else if (memcmp(config, "cell", 4) == 0 && (config[4] == '\0' || config[4] == ' ')) {
     // user/origin are readable so a node's auth identity can be verified against another's;
     // the password is never echoed — only whether one is set (pass=set/none).

@@ -57,6 +57,11 @@ public:
   void setTLS(bool enabled, bool verify) { _tls = enabled; _tls_verify = verify; }
   /** LTE-M band bitmap hint as a Quectel hex string (empty = leave modem default). */
   void setBand(const char* band_hex);
+  // Preferred operator (numeric PLMN, e.g. "310260"); empty = automatic selection.
+  // Applied as AT+COPS=4 (manual with automatic fallback) during modem configuration.
+  void setPlmn(const char* plmn);
+  // "<plmn>/b<band>" from the last AT+QNWINFO (taken while (re)registering), "none", or "-".
+  const char* netInfo() const { return _netinfo; }
   void setDebugStream(Stream* dbg) { _dbg = dbg; }
 
   // ---- lifecycle ----
@@ -215,6 +220,13 @@ private:
   char     _pass[64]     = {0};
   char     _client_id[40]= {0};
   char     _band[24]     = {0};
+  char     _plmn[8]      = {0};
+  char     _netinfo[24]  = "-";
+  // True once configureModemTick() has run since the modem last powered up / reset. While set,
+  // an MQTT retry resumes at registration instead of re-running the configuration: re-issuing
+  // nwscanseq/iotopmode (effect = immediate) forced a network rescan on every retry, which
+  // made APL_R02 hop carriers every 1-3 min (Hologram log 2026-10-13: 96 sessions, 5 with data).
+  bool     _configured   = false;
   uint16_t _keepalive    = 300;    // seconds; longer than the WiFi build's 45s to save airtime/power
   bool     _tls          = true;
   bool     _tls_verify   = true;

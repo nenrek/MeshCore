@@ -111,6 +111,7 @@ void CellularMQTTBridge::begin() {
   _modem.setClientId(_device_id[0] ? _device_id : _origin);
   _modem.setAPN(_prefs->cellular_apn[0] ? _prefs->cellular_apn : "hologram");
   if (_prefs->cellular_band[0]) _modem.setBand(_prefs->cellular_band);
+  _modem.setPlmn(_prefs->cellular_plmn);   // empty = automatic operator selection
   _modem.setTLS(_prefs->cellular_tls != 0, _prefs->cellular_tls_verify != 0);
   _modem.setKeepAlive(_prefs->cellular_keepalive ? _prefs->cellular_keepalive : 60);
   _modem.setTimeSyncCallback(&CellularMQTTBridge::onModemTime, this);
@@ -370,6 +371,21 @@ void CellularMQTTBridge::setStatsSources(mesh::Dispatcher* dispatcher, mesh::Rad
   _ms = ms;
 }
 
+// Short carrier label for a US PLMN (Hologram roams across all of these); else the PLMN itself.
+static const char* carrierName(const char* plmn) {
+  static const char* const tmo[] = {"310260","310240","310160","310200","310210","310220",
+                                    "310230","310250","310270","310310","310490","310660","310800"};
+  static const char* const att[] = {"310410","310030","310150","310170","310280","310380",
+                                    "310560","310680","313100"};
+  static const char* const vzw[] = {"311480","311270","310004","310012","311110"};
+  static const char* const usc[] = {"311580","311220"};
+  for (auto p : tmo) if (strcmp(plmn, p) == 0) return "TMO";
+  for (auto p : att) if (strcmp(plmn, p) == 0) return "ATT";
+  for (auto p : vzw) if (strcmp(plmn, p) == 0) return "VZW";
+  for (auto p : usc) if (strcmp(plmn, p) == 0) return "USCC";
+  return plmn;
+}
+
 void CellularMQTTBridge::formatStatus(char* buf, size_t buf_size) {
   int csq = _modem.lastRssiDbm();   // 0 = unknown (CSQ 99)
   char gps[32];
@@ -379,8 +395,21 @@ void CellularMQTTBridge::formatStatus(char* buf, size_t buf_size) {
     snprintf(gps, sizeof(gps), "%s", _prefs->cellular_gps_enabled ? "acq" : "off");
   const char* rst = nullptr; int dummy = 0;
   rebootDiag(&rst, &dummy);   // rebootDiag reason only (best-effort on nRF52); count is flash-persisted
-  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s rst=%s cnt=%lu",
-           _modem.stateName(), _modem.ceregStat(), csq,
+  // net=<carrier>/b<band> of the last registration (+ pref=<carrier> when cell.plmn is set)
+  char net[40];
+  const char* ni = _modem.netInfo();
+  const char* slash = strchr(ni, '/');
+  if (slash) {
+    char plmn[8]; size_t n = (size_t)(slash - ni) < sizeof(plmn) - 1 ? (size_t)(slash - ni) : sizeof(plmn) - 1;
+    memcpy(plmn, ni, n); plmn[n] = 0;
+    snprintf(net, sizeof(net), "%s%s", carrierName(plmn), slash);
+  } else snprintf(net, sizeof(net), "%s", ni);
+  if (_prefs->cellular_plmn[0]) {
+    size_t l = strlen(net);
+    snprintf(net + l, sizeof(net) - l, " pref=%s", carrierName(_prefs->cellular_plmn));
+  }
+  snprintf(buf, buf_size, "modem=%s reg=%d csq=%d net=%s mqtt=%s q=%d pub=%lu drop=%lu err=%s pube=%s gps=%s rst=%s cnt=%lu",
+           _modem.stateName(), _modem.ceregStat(), csq, net,
            _modem.isReady() ? "up" : "down", _q_count,
            (unsigned long)_published, (unsigned long)_dropped, _modem.lastError(),
            _modem.lastPubResult(), gps, rst ? rst : "-", (unsigned long)_prefs->reboot_count);

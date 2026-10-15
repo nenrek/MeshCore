@@ -48,6 +48,11 @@ void BG77Modem::setCredentials(const char* username, const char* password) {
 void BG77Modem::setClientId(const char* client_id) {
   if (client_id) { strncpy(_client_id, client_id, sizeof(_client_id) - 1); _client_id[sizeof(_client_id) - 1] = 0; }
 }
+void BG77Modem::setPlmn(const char* plmn) {
+  if (plmn) { strncpy(_plmn, plmn, sizeof(_plmn) - 1); _plmn[sizeof(_plmn) - 1] = 0; }
+  else _plmn[0] = 0;
+}
+
 void BG77Modem::setBand(const char* band_hex) {
   if (band_hex) { strncpy(_band, band_hex, sizeof(_band) - 1); _band[sizeof(_band) - 1] = 0; }
 }
@@ -155,6 +160,7 @@ BG77Modem::AtRes BG77Modem::atTick(const char* cmd, const char* expect, uint32_t
 }
 
 void BG77Modem::enterState(State s) {
+  if (s == ST_POWERING) _configured = false;   // fresh modem boot/reset: configure again
   _state = s;
   _state_since = millis();
   _at_active = false;
@@ -198,20 +204,59 @@ BG77Modem::AtRes BG77Modem::configureModemTick() {
       if (r == AT_FAIL) return AT_FAIL;
       _phase_step = 4; return AT_BUSY;
     }
-    // LTE-M first (nwscanseq 020301), prefer LTE-M (iotopmode 0). Best-effort.
-    case 4: { AtRes r = atTick("AT+QCFG=\"nwscanseq\",020301", "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 5; return AT_BUSY; }
-    case 5: { AtRes r = atTick("AT+QCFG=\"iotopmode\",0,1", "OK", T_CFG);    if (r == AT_BUSY) return AT_BUSY; _phase_step = 6; return AT_BUSY; }
-    case 6: {  // optional LTE-M band mask (2nd QCFG "band" field)
-      if (!_band[0]) { _phase_step = 7; return AT_BUSY; }
+    // LTE-M first (nwscanseq 020301), prefer LTE-M (iotopmode 0). Best-effort. Each setting is
+    // read first and only written when it differs: a write takes effect immediately and makes
+    // the modem rescan / re-attach, which is what drove APL_R02's carrier hopping.
+    case 4: { AtRes r = atTick("AT+QCFG=\"nwscanseq\"", "+QCFG:", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+              _phase_step = (r == AT_OK && strstr(_line, "020301")) ? 6 : 5; return AT_BUSY; }
+    case 5: { AtRes r = atTick("AT+QCFG=\"nwscanseq\",020301", "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 6; return AT_BUSY; }
+    case 6: { AtRes r = atTick("AT+QCFG=\"iotopmode\"", "+QCFG:", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+              _phase_step = (r == AT_OK && strstr(_line, "\"iotopmode\",0")) ? 8 : 7; return AT_BUSY; }
+    case 7: { AtRes r = atTick("AT+QCFG=\"iotopmode\",0,1", "OK", T_CFG);    if (r == AT_BUSY) return AT_BUSY; _phase_step = 8; return AT_BUSY; }
+    case 8: {  // optional LTE-M band mask (2nd QCFG "band" field)
+      if (!_band[0]) { _phase_step = 9; return AT_BUSY; }
       snprintf(cmd, sizeof(cmd), "AT+QCFG=\"band\",0,%s,0,1", _band);
-      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 7; return AT_BUSY;
+      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 9; return AT_BUSY;
     }
-    case 7: {  // PDP context / APN
+    case 9: {  // PDP context / APN: query, rewrite only if the APN differs
+      AtRes r = atTick("AT+CGDCONT?", "+CGDCONT: 1,", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+      snprintf(cmd, sizeof(cmd), "\"%s\"", _apn);
+      _phase_step = (r == AT_OK && strstr(_line, cmd)) ? 11 : 10; return AT_BUSY;
+    }
+    case 10: {
       snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", _apn);
-      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 8; return AT_BUSY;
+      AtRes r = atTick(cmd, "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 11; return AT_BUSY;
     }
-    case 8: {  // radio on
-      AtRes r = atTick("AT+CFUN=1", "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; return AT_OK;
+    case 11: {  // radio on
+      AtRes r = atTick("AT+CFUN=1", "OK", T_CFG); if (r == AT_BUSY) return AT_BUSY; _phase_step = 12; return AT_BUSY;
+    }
+    case 12: {  // operator selection: +COPS: <mode>[,<format>,"<oper>",<act>]
+      AtRes r = atTick("AT+COPS?", "+COPS:", T_CFG); if (r == AT_BUSY) return AT_BUSY;
+      if (r != AT_OK) {
+        // A late URC (e.g. +QMTDISC from the bridge restart that applied the setting) can mangle
+        // this reply. Retry the read; if it still can't be read, apply an explicit preference
+        // anyway, and leave automatic selection alone.
+        if (++_at_retry < 3) return AT_BUSY;          // atTick re-sends on the next call
+        _at_retry = 0;
+        if (_plmn[0]) { _phase_step = 13; return AT_BUSY; }
+        _configured = true; return AT_OK;
+      }
+      _at_retry = 0;
+      const char* c = strchr(_line, ':');
+      int mode = c ? atoi(c + 1) : -1;
+      // After AT+COPS=4 registers on the preferred network the modem reports mode 1 (manual),
+      // so either 1 or 4 with the preferred PLMN means "already applied".
+      bool ok = _plmn[0] ? ((mode == 4 || mode == 1) && strstr(_line, _plmn) != nullptr) : (mode == 0);
+      if (ok) { _configured = true; return AT_OK; }
+      _phase_step = 13; return AT_BUSY;
+    }
+    case 13: {  // prefer _plmn with automatic fallback (mode 4), or back to automatic (mode 0)
+      if (_plmn[0]) snprintf(cmd, sizeof(cmd), "AT+COPS=4,2,\"%s\"", _plmn);
+      else          snprintf(cmd, sizeof(cmd), "AT+COPS=0");
+      AtRes r = atTick(cmd, "OK", 180000);   // can block while the modem (re)registers
+      if (r == AT_BUSY) return AT_BUSY;
+      if (_dbg) { _dbg->print("[BG77] operator selection: "); _dbg->println(r == AT_OK ? cmd : "failed (best-effort)"); }
+      _configured = true; return AT_OK;
     }
   }
   return AT_OK;
@@ -237,6 +282,22 @@ BG77Modem::AtRes BG77Modem::pollRegistrationTick() {
       if (r == AT_OK) {
         char* p = strstr(_line, "+CSQ:");
         if (p) { int raw = atoi(p + 5); _rssi_dbm = (raw == 99) ? 0 : (-113 + 2 * raw); }
+      }
+      _phase_step = 2; return AT_BUSY;
+    }
+    case 2: {  // +QNWINFO: "<act>","<plmn>","LTE BAND <n>",<channel>  (or "No Service")
+      AtRes r = atTick("AT+QNWINFO", "+QNWINFO:", T_CFG);
+      if (r == AT_BUSY) return AT_BUSY;
+      if (r == AT_OK) {
+        const char* q1 = strchr(_line, '"');
+        const char* q2 = q1 ? strchr(q1 + 1, '"') : nullptr;
+        const char* q3 = q2 ? strchr(q2 + 1, '"') : nullptr;
+        const char* q4 = q3 ? strchr(q3 + 1, '"') : nullptr;
+        const char* band = strstr(_line, "BAND ");
+        if (q3 && q4 && (q4 - q3 - 1) > 0 && (q4 - q3 - 1) < 8)
+          snprintf(_netinfo, sizeof(_netinfo), "%.*s/b%d", (int)(q4 - q3 - 1), q3 + 1, band ? atoi(band + 5) : 0);
+        else
+          snprintf(_netinfo, sizeof(_netinfo), "none");
       }
       _phase_step = 0; return AT_OK;        // cycle complete
     }
@@ -500,7 +561,7 @@ void BG77Modem::loop() {
         }
       }
       // LTE-M cold attach can take several minutes; give it 5 before a full re-init.
-      if ((millis() - _state_since) > 300000) enterBackoff("no registration");
+      if ((millis() - _state_since) > 300000) { _configured = false; enterBackoff("no registration"); }
       break;
     }
 
@@ -566,6 +627,10 @@ void BG77Modem::loop() {
           if (_dbg) _dbg->println("[BG77] modem silent: PWRKEY re-pulse");
           powerPulse();
           enterState(ST_POWERING);
+        } else if (_configured) {
+          // Modem powered and already configured: resume at registration -> connect. A full
+          // ST_INIT here re-applied scan/RAT settings and forced a rescan on every retry.
+          enterState(ST_NET_WAIT); _last_poll = 0;
         } else {
           enterState(ST_INIT);  // modem stays powered
         }

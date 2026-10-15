@@ -1064,6 +1064,7 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.cellular_origin[0] = '\0';
   StrHelper::strncpy(_prefs.cellular_apn, "hologram", sizeof(_prefs.cellular_apn));
   _prefs.cellular_band[0] = '\0';
+  _prefs.cellular_plmn[0] = '\0';
   _prefs.cellular_tls = 1;                 // TLS from the start
   _prefs.cellular_tls_verify = 1;
   _prefs.cellular_pkts_enabled = 1;

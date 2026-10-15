@@ -87,6 +87,7 @@ public:
   char     cellular_origin[32] = "";      // display name for MQTT JSON (empty = node_name)
   char     cellular_apn[40] = "hologram"; // APN
   char     cellular_band[24] = "";        // LTE-M band mask hint (Quectel hex); empty = modem default
+  char     cellular_plmn[8] = "";         // preferred operator (numeric PLMN); empty = automatic
   uint8_t  cellular_tls = 1;              // 1 = mqtts, 0 = plaintext
   uint8_t  cellular_tls_verify = 1;       // 1 = verify broker cert against uploaded CA
   uint8_t  cellular_pkts_enabled = 1;     // publish RX packets
@@ -207,6 +208,7 @@ private:
       def("origin", _parent->cellular_origin, sizeof(_parent->cellular_origin));
       def("apn", _parent->cellular_apn, sizeof(_parent->cellular_apn));
       def("band", _parent->cellular_band, sizeof(_parent->cellular_band));
+      def("plmn", _parent->cellular_plmn, sizeof(_parent->cellular_plmn));
       def("tls", _parent->cellular_tls);
       def("tls_verify", _parent->cellular_tls_verify);
       def("pkts", _parent->cellular_pkts_enabled);
