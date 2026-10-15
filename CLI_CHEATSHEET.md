@@ -65,7 +65,7 @@ More advanced radio/routing keys exist (`flood.max`, `agc.reset.interval`, `radi
 | Command | Description |
 |---|---|
 | `get cell` | Full config in one line (host, tls, apn, iata, **user**, **pass**, origin, toggles, keepalive, gps) |
-| `cell.status` | Live modem state: `modem= reg= csq= mqtt= pub= drop= err= gps= rst= cnt=` — main health check (`rst`/`cnt` = last reboot reason + count) |
+| `cell.status` | Live modem state: `modem= reg= csq= net= mqtt= pub= drop= err= gps= rst= cnt=` — main health check. `net=TMO/b12` = carrier + LTE band of the last registration *(cell.14+)*, `pref=` shown when `cell.plmn` is set; `rst`/`cnt` = last reboot reason + count |
 | `set cell.server <ip>` | Broker address — use the **IP** (SIM DNS is unreliable) |
 | `set cell.port <n>` | Broker port (8883 for mqtts) |
 | `set cell.user <user>` | MQTT username (`observer`) |
@@ -73,6 +73,7 @@ More advanced radio/routing keys exist (`flood.max`, `agc.reset.interval`, `radi
 | `set cell.iata <code>` | IATA topic segment (`ATW`) — drives the map region |
 | `set cell.origin <name>` | MQTT display name (empty = node name) |
 | `set cell.apn <apn>` | Cellular APN (`hologram`) |
+| `set cell.plmn <PLMN>` / `auto` | *(cell.14+)* Prefer one carrier, with automatic fallback (`AT+COPS=4`). PLMNs: T-Mobile `310260`, AT&T `310410`, Verizon `311480`. `get cell.plmn` shows it. Allowed over the MQTT downlink |
 | `set cell.tls <on\|off>` / `set cell.tls.verify <on\|off>` | TLS on/off / validate the cert |
 | `set cell.keepalive <10-3600>` | MQTT keepalive seconds (60 keeps it fresh on beacon) |
 | `set cell.interval <min>` | Status publish interval |
@@ -147,7 +148,7 @@ The asset beacon is a companion-app build, so it also takes the full **Common** 
 
 ## Reading a version
 
-`ver` → `v1.17.1-mw.cell.13+g3da72c2`
+`ver` → `v1.17.1-mw.cell.14+g10d8da6`
 
 | Part | Meaning |
 |---|---|
