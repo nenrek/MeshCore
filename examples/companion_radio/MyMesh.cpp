@@ -2302,13 +2302,11 @@ void MyMesh::checkCLIRescueCmd() {
       char key[16];
       size_t klen = sp ? (size_t)(sp - config) : 0;
       if (sp && klen < sizeof(key) && trySetAbVar((memcpy(key, config, klen), key[klen] = 0, key), sp + 1)) {
-        Serial.printf("  > asset-beacon: en=%u zh=%us flood=%us move=%um idle=%us (gps forced on, loc shared)
-",
+        Serial.printf("  > asset-beacon: en=%u zh=%us flood=%us move=%um idle=%us (gps forced on, loc shared)\n",
                       _prefs.ab_enabled, _prefs.ab_zh_secs, _prefs.ab_flood_secs,
                       _prefs.ab_move_m, _prefs.ab_idle_secs);
       } else {
-        Serial.printf("  Error: unknown config: %s
-", config);
+        Serial.printf("  Error: unknown config: %s\n", config);
       }
     } else
 #endif
