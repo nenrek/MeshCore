@@ -44,6 +44,10 @@
 #include "helpers/SNMPAgent.h"
 #endif
 
+#ifdef DISPLAY_ACTIVITY_DASHBOARD
+#include <helpers/RadioActivityWindow.h>
+#endif
+
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/AlertReporter.h>
 #include <helpers/ArduinoHelpers.h>
@@ -77,10 +81,6 @@ struct RepeaterStats {
   uint32_t n_recv_errors;
 };
 
-#ifndef MAX_CLIENTS
-  #define MAX_CLIENTS           32
-#endif
-
 struct NeighbourInfo {
   mesh::Identity id;
   uint32_t advert_timestamp;
@@ -89,11 +89,11 @@ struct NeighbourInfo {
 };
 
 #ifndef FIRMWARE_BUILD_DATE
-  #define FIRMWARE_BUILD_DATE   "14 Aug 2026"
+  #define FIRMWARE_BUILD_DATE   "15 Oct 2026"
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.17.1"
+  #define FIRMWARE_VERSION   "v1.18.0"
 #endif
 
 #define FIRMWARE_ROLE "repeater"
@@ -113,6 +113,9 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
   uint64_t uptime_millis;
   unsigned long next_local_advert, next_flood_advert;
   bool _logging;
+#ifdef DISPLAY_ACTIVITY_DASHBOARD
+  RadioActivityWindow _activity;   // rolling RF receive window, for the TFT dashboard
+#endif
   NodePrefs _prefs;
   ClientACL  acl;
   CommonCLI _cli;
@@ -135,6 +138,7 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
   CayenneLPP telemetry;
   unsigned long set_radio_at, revert_radio_at;
   unsigned long _ota_update_at = 0;  // deferred `ota update` fire time (0 = none scheduled)
+  uint8_t _ota_update_channel = 0;   // channel `ota update` checked; a later `ota branch` cannot retarget it
   float pending_freq;
   float pending_bw;
   uint8_t pending_sf;
@@ -146,6 +150,8 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks
   ESPNowBridge bridge;
 #elif defined(WITH_MQTT_BRIDGE)
   MQTTBridge* bridge;
+  // begin() was refused after an unproven stop; restart once the task acknowledges.
+  bool _bridge_resume_pending = false;
 #elif defined(WITH_CELLULAR_MQTT_BRIDGE)
   CellularMQTTBridge* bridge;
 #endif
@@ -283,10 +289,23 @@ protected:
 
   void sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, uint8_t path_hash_size);
 
+  // Build the DHCP hostname from the current node name and hand it to the
+  // link. Only automatic links carry one: a plain Wi-Fi observer keeps the
+  // framework default, and changing that for the existing fleet is a separate
+  // decision.
+  void applyNetworkHostname(const char* when);
+
 public:
   MyMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables);
 
   void begin(FILESYSTEM* fs);
+
+  // CommonCLICallbacks: `set name` has just rewritten node_name.
+  void onNodeNameChanged() override {
+#if defined(WITH_MQTT_BRIDGE) && defined(ESP_PLATFORM)
+    applyNetworkHostname(" (renamed)");
+#endif
+  }
   void sendNodeDiscoverReq();
   const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
   const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
@@ -295,10 +314,26 @@ public:
   NodePrefs* getNodePrefs() {
     return &_prefs;
   }
+  bool isHiddenNode() const {
+    return _prefs.advert_interval == 0 && _prefs.flood_advert_interval == 0;
+  }
+
+#ifdef DISPLAY_ACTIVITY_DASHBOARD
+  RadioActivityWindow* getActivityWindow() { return &_activity; }
+#endif
+
+#ifdef WITH_MQTT_BRIDGE
+  MQTTPrefs* getObserverPrefs() { return _cli.getObserverPrefs(); }
+#endif
 
   void savePrefs() override {
     _cli.savePrefs(_fs);
   }
+#ifdef WITH_MQTT_BRIDGE
+  bool saveObserverPrefs() override {
+    return _cli.saveObserverPrefs(_fs);
+  }
+#endif
 
   void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
 
@@ -380,6 +415,9 @@ public:
 #endif
       if (!bridge) return;
     }
+#ifdef WITH_MQTT_BRIDGE
+    if (!enable) _bridge_resume_pending = false;   // an explicit stop cancels a pending resume
+#endif
     if (enable == bridge->isRunning()) return;
     if (enable)
     {
@@ -397,6 +435,7 @@ public:
       bridge->begin();
 #ifdef WITH_MQTT_BRIDGE
       _alerter.setBridge(bridge);
+      _bridge_resume_pending = !bridge->isRunning() && bridge->isStopUnproven();
 #endif
     }
     else
@@ -404,6 +443,7 @@ public:
       bridge->end();
 #ifdef WITH_MQTT_BRIDGE
       _alerter.setBridge(nullptr);
+      _bridge_resume_pending = false;
 #endif
     }
   }
@@ -429,6 +469,9 @@ public:
     bridge->setStatsSources(this, _radio, _cli.getBoard(), _ms);
 #endif
     bridge->begin();
+#ifdef WITH_MQTT_BRIDGE
+    _bridge_resume_pending = !bridge->isRunning() && bridge->isStopUnproven();
+#endif
   }
 
   void restartBridgeSlot(int slot) override {
@@ -486,6 +529,7 @@ public:
   bool beginDeferredOtaUpdate() override {
     _ota_update_at = millis() + 2500;
     if (_ota_update_at == 0) _ota_update_at = 1;  // 0 means "none"
+    _ota_update_channel = _prefs.ota_channel;
 #if defined(WITH_MQTT_BRIDGE)
     // Broadcast START now, while the loop still runs (the 2.5 s reply window):
     // the deferred flash blocks the loop and, on success, reboots — so a start
@@ -544,6 +588,15 @@ public:
     _wc_slot_restart_mask = 0;
   }
   void onConfigBatchEnd() override;
+  bool onInitialSetupComplete() override {
+    // The password command does not report its save; make it durable first.
+    if (!_cli.savePrefs(_fs)) return false;
+    MQTTPrefs* obs = _cli.getObserverPrefs();
+    obs->network_setup_complete = 1;
+    if (_cli.saveObserverPrefs(_fs)) return true;
+    obs->network_setup_complete = 0;
+    return false;
+  }
   void buildStatsJson(char* buf, size_t buf_size) override;
 #endif
 

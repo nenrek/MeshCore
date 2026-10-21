@@ -59,6 +59,7 @@ int MQTTMessageBuilder::buildStatusMessage(
   int packets_sent,
   int packets_received,
   const char* repeat,
+  const MQTTConnHealth& conn_health,
   int reboot_count,
   const char* reboot_reason
 ) {
@@ -66,7 +67,7 @@ int MQTTMessageBuilder::buildStatusMessage(
       doc, origin, origin_id, model, firmware_version, radio, client_version,
       status, timestamp, buffer, buffer_size, battery_mv, uptime_secs, errors,
       queue_len, noise_floor, tx_air_secs, rx_air_secs, recv_errors, internal_heap,
-      packets_sent, packets_received, repeat, reboot_count, reboot_reason);
+      packets_sent, packets_received, repeat, conn_health, reboot_count, reboot_reason);
 }
 
 int MQTTMessageBuilder::buildPacketMessage(
@@ -212,8 +213,8 @@ int MQTTMessageBuilder::buildPacketJSON(
     packet_type, route_str,
     packet->payload_len,
     raw_hex,
-    12.5f, // SNR - using reasonable default
-    -65,   // RSSI - using reasonable default
+    NAN,   // SNR - unknown on this reconstruction-less fallback path
+    MQTT_RSSI_UNKNOWN, // RSSI - unknown on this reconstruction-less fallback path
     NAN,   // score - unknown on this reconstruction-less fallback path
     hash_str,
     has_path ? packet->path : nullptr,

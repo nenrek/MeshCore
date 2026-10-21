@@ -345,7 +345,7 @@ void CellularMQTTBridge::buildAndQueueStatus() {
     client_version, "online", timestamp, _scratch, STATUS_BUF,
     battery_mv, uptime_secs, errors, /*queue_len*/ _q_count, noise_floor,
     tx_air_secs, rx_air_secs, recv_errors, /*internal_heap*/ -1,
-    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on",
+    packets_sent, packets_received, _prefs->disable_fwd ? "off" : "on", MQTTConnHealth(),
     (int)_prefs->reboot_count, reboot_reason);
 
   if (len <= 0) return;
