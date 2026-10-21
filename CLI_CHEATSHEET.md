@@ -1,6 +1,6 @@
 # MeshCore CLI cheat sheet — Meshwerks fleet
 
-Commands across all custom builds, grouped by firmware. Base: **MeshCore v1.16.0**.
+Commands across all custom builds, grouped by firmware. Base: **MeshCore v1.18.0** (fleet builds `cell.15` / `uart.11` / `wifiobs.17` / `asset.3`).
 Convention: `get <key>` reads a value, `set <key> <value>` writes it. Passwords are shown as
 `<placeholders>` — fill in your own.
 
@@ -114,6 +114,7 @@ ESP32 side via the `esp` relay (flashed by web-OTA with the `wifiobs` .bin):
 | `esp set mqtt1.server/username/password <v>` | Custom-slot broker settings |
 | `esp set bridge.enabled <on\|off>` | Turn the MQTT bridge on — do this at deploy |
 | `esp ota check` / `esp ota update` | Pull-OTA from a manifest, if configured (separate from `start ota`) |
+| `esp ota branch [prod\|beta\|default]` | *(wifiobs.17+, from 1.18)* Show / pick the OTA release channel. On fleet builds every channel resolves to `ota.meshwerks.org`, so it changes nothing today |
 
 ## Weather node (`weather`)
 
@@ -148,11 +149,11 @@ The asset beacon is a companion-app build, so it also takes the full **Common** 
 
 ## Reading a version
 
-`ver` → `v1.17.1-mw.cell.14+g10d8da6`
+`ver` → `v1.18.0-mw.cell.15+g23ad2cf`
 
 | Part | Meaning |
 |---|---|
-| `v1.16.0` | Upstream MeshCore base |
+| `v1.18.0` | Upstream MeshCore base |
 | `mw` | Fleet (meshwerks) |
 | `cell` | Which firmware |
 | `.1` | Your revision (bump per change) |
