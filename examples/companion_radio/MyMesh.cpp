@@ -5,6 +5,9 @@
 #include <WiFi.h>
 #endif
 #include <Mesh.h>
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+#include <InternalFileSystem.h>
+#endif
 
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
@@ -2161,6 +2164,29 @@ bool MyMesh::handleCommand(const char* command, uint32_t sender_timestamp, char*
     return true;
   }
 
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  // mw: one-shot BLE OTA boot. Local links only (USB / BLE / TCP companion frames pass
+  // sender_timestamp 0) -- never from a mesh peer. Sets a flag file and reboots; on that
+  // boot main.cpp advertises the open DFU service instead of the BLE companion interface
+  // (Ethernet/USB stay up) and reboots back to normal if no update starts in 10 min.
+  if (strcmp(command, "start ota") == 0) {
+    if (sender_timestamp != 0) {
+      strcpy(reply, "Error: start ota is local-only");
+      return true;
+    }
+    File f = InternalFS.open(MW_OTA_FLAG_FILE, FILE_O_WRITE);
+    if (!f) {
+      strcpy(reply, "Error: could not write OTA flag");
+      return true;
+    }
+    f.write((const uint8_t*)"1", 1);
+    f.close();
+    _ota_reboot_at = millis() + 2000;   // let this reply reach the client first
+    strcpy(reply, "OK - rebooting into BLE OTA mode (10 min window, Ethernet/USB stay up)");
+    return true;
+  }
+#endif
+
   if (strcmp(command, "poweroff") == 0 || strcmp(command, "shutdown") == 0) {
     board.powerOff(); // doesn't return
     return true;
@@ -2488,6 +2514,10 @@ void MyMesh::checkSerialInterface() {
 
 void MyMesh::loop() {
   BaseChatMesh::loop();
+
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  if (_ota_reboot_at && (long)(millis() - _ota_reboot_at) >= 0) board.reboot();
+#endif
 
   if (_cli_rescue) {
     checkCLIRescueCmd();

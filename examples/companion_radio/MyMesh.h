@@ -1,5 +1,7 @@
 #pragma once
 
+#define MW_OTA_FLAG_FILE "/ota_once"   // mw: one-shot BLE OTA boot flag (see `start ota`)
+
 #include <Arduino.h>
 #include <Mesh.h>
 
@@ -264,6 +266,9 @@ private:
   uint8_t *sign_data;
   uint32_t sign_data_len;
   unsigned long dirty_contacts_expiry;
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  unsigned long _ota_reboot_at = 0;   // deferred reboot for `start ota` (0 = none)
+#endif
 
   TransportKey send_scope;
 

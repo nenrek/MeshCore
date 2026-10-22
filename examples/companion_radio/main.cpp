@@ -132,6 +132,11 @@ void halt() {
   bool wifi_enabled = false;   // set at boot from prefs; false also when the effective SSID is blank
 #endif
 
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  #define MW_OTA_WINDOW_MS (10UL * 60UL * 1000UL)
+  static unsigned long mw_ota_deadline = 0;   // non-zero = this boot is the one-shot BLE OTA window
+#endif
+
 void setup() {
   Serial.begin(115200);
   board.begin();
@@ -205,9 +210,27 @@ void setup() {
 #endif
 
 // add bluetooth interface
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  // mw: one-shot BLE OTA boot requested by `start ota` (flag file, consumed here so a
+  // power cycle always comes back normal). Advertise the open DFU service in place of the
+  // BLE companion interface; Ethernet/USB below still come up so the node stays reachable.
+  if (InternalFS.exists(MW_OTA_FLAG_FILE)) {
+    InternalFS.remove(MW_OTA_FLAG_FILE);
+    char ota_reply[64];
+    if (board.startOTAUpdate(the_mesh.getNodePrefs()->node_name, ota_reply)) {
+      mw_ota_deadline = millis() + MW_OTA_WINDOW_MS;
+      if (mw_ota_deadline == 0) mw_ota_deadline = 1;
+    }
+  }
+#endif
 #if defined(BLE_PIN_CODE)
-  bluetooth_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
-  interface_manager.addInterface(InterfaceType::Bluetooth, &bluetooth_interface);
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  if (mw_ota_deadline == 0)
+#endif
+  {
+    bluetooth_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
+    interface_manager.addInterface(InterfaceType::Bluetooth, &bluetooth_interface);
+  }
 #endif
 
 // add wifi interface
@@ -290,6 +313,11 @@ void setup() {
 }
 
 void loop() {
+#if defined(MW_START_OTA) && defined(NRF52_PLATFORM)
+  // BLE OTA window expired with no DFU client connected -> reboot back to normal.
+  // (A connected client hops the node into the bootloader, so this never cuts a transfer.)
+  if (mw_ota_deadline && (long)(millis() - mw_ota_deadline) >= 0 && !Bluefruit.connected()) board.reboot();
+#endif
   the_mesh.loop();
   interface_manager.loop();
   sensors.loop();
