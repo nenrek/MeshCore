@@ -1291,6 +1291,7 @@ bool CommonCLI::handleObserverCommand(uint32_t sender_timestamp, char* command, 
     } else {
       strcpy(reply, "ERR: nRF52 remote DFU not supported on this build");
     }
+    return true;
   } else if (memcmp(command, "ota branch", 10) == 0 && (command[10] == 0 || command[10] == ' ')) {
     // Switch (or report) the OTA release channel this device pulls from. The
     // selection is persisted (NodePrefs::ota_channel) and resolved to a baked-in
