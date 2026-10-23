@@ -51,6 +51,30 @@ static inline void wdtStart() {}
 static inline void wdtFeed() {}
 #endif
 
+#if defined(NRF52_PLATFORM)
+// After a SUCCESSFUL remote UART DFU (`nrf ota` over the ESP link), the OTAFIX bootloader
+// jumps straight into this app: no chip reset, and it never closes its serial transport.
+// It drove UART0 -- the same peripheral and pins as Serial1 (NRF_UARTE0) -- in legacy
+// non-EasyDMA mode, so UARTE0 arrives here still enabled, receiving, with legacy
+// interrupts on. Uart::begin() writes PSEL/CONFIG without disabling first (PSEL only
+// latches while the peripheral is disabled) and only adds its own ENDRX/ENDTX
+// interrupts, so Serial1 came up dead: mesh fine, nothing to/from the RAK2305 until a
+// power cycle (OSH_R01 after uart.10 and uart.11). Put UARTE0 back to reset state first.
+static void resetUart0AfterBootloader() {
+  NVIC_DisableIRQ(UARTE0_UART0_IRQn);
+  NRF_UARTE0->INTENCLR = 0xFFFFFFFFUL;
+  NRF_UARTE0->TASKS_STOPRX = 1;
+  NRF_UARTE0->TASKS_STOPTX = 1;
+  delayMicroseconds(200);                    // let RX/TX wind down before disabling
+  NRF_UARTE0->ENABLE = 0;
+  NRF_UARTE0->EVENTS_RXDRDY = 0; NRF_UARTE0->EVENTS_TXDRDY = 0;
+  NRF_UARTE0->EVENTS_ENDRX = 0;  NRF_UARTE0->EVENTS_ENDTX = 0;
+  NRF_UARTE0->EVENTS_RXTO = 0;   NRF_UARTE0->EVENTS_TXSTOPPED = 0;
+  NRF_UARTE0->EVENTS_ERROR = 0;  NRF_UARTE0->ERRORSRC = 0xFFFFFFFFUL;
+  NVIC_ClearPendingIRQ(UARTE0_UART0_IRQn);
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -121,6 +145,9 @@ void setup() {
 #endif
   // UART1 talks to the RAK2305. NOTE: this is the same UART the optional
   // serial GPS would use — do not enable GPS.
+#if defined(NRF52_PLATFORM)
+  resetUart0AfterBootloader();
+#endif
   Serial1.begin(MQTT_AT_BAUD);
   Serial.printf("[MQTT] UART1 to RAK2305: RX=%d TX=%d baud=%d\n",
                 (int)PIN_SERIAL1_RX, (int)PIN_SERIAL1_TX, (int)MQTT_AT_BAUD);
