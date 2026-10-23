@@ -133,6 +133,13 @@ ESP32 side via the `esp` relay (flashed by web-OTA with the `wifiobs` .bin):
 | `uptime <on\|off\|status\|test>` | Periodic uptime reporting |
 | `set display timeout <s>` | OLED blank timeout |
 
+## Ethernet companion (`companion-eth`) — KE9NEN-GW01
+
+| Command | Description |
+|---|---|
+| `start ota` | *(companion-eth.1+)* Local links only (USB, BLE, or the TCP companion CLI frame over Ethernet; refused from mesh peers). Reboots into a one-shot BLE OTA mode advertising `RAK4631_OTA` for 10 min (Ethernet/USB stay up), then back to normal. Flash from the desktop with `fleet-control/nrf-ota/ble_dfu.py <MAC> firmware.zip` |
+| `ver` / `get name` | Over the companion CLI frame (CMD 66) the full version string is returned (the device-info frame truncates it to 20 chars) |
+
 ## Asset beacon (`asset`)
 
 | Command | Description |
